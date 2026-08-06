@@ -22,35 +22,54 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SITE = (process.env.SITE_URL || 'https://marschannewtag-spec.github.io/mars-stock').replace(/\/$/, '');
 
-// 要比對的檔案:涵蓋「殼層 + 設定 + 策略核心 + UI 主控」。
-// 這四支只要有一支沒上去,你看到的訊號就可能是錯的。
-const FILES = ['sw.js', 'index.html', 'js/config.js', 'js/strategy.js', 'js/app.js'];
+// 要比對哪些檔案:直接從 sw.js 的 SHELL 清單推導 —— 也就是
+// 「所有會被瀏覽器快取、進而影響你看到什麼」的檔案,一支都不漏。
+//
+// 不用手挑清單:「只更新一半」可能發生在任何一支檔案上,手挑的清單
+// 一定會漏掉新加的模組,而且漏掉時毫無徵兆。從 SHELL 推導的話,
+// 新模組一被加進快取清單就自動納入比對(verify.mjs 又保證 SHELL 和
+// js/ 實際檔案一致,兩者互相咬合)。
+function filesToCheck() {
+  const sw = readFileSync(join(ROOT, 'sw.js'), 'utf8');
+  const shell = [...sw.matchAll(/'\.\/([^']*)'/g)]
+    .map((m) => m[1])
+    .filter(Boolean);                    // './' 這種根路徑項目過濾掉
+  return [...new Set(['sw.js', ...shell])];
+}
+const FILES = filesToCheck();
+
+// 二進位檔(圖示)按位元組比;文字檔先把換行正規化再比,
+// 避免 Windows / Linux checkout 的 CRLF 差異造成誤報。
+const isBinary = (f) => /\.(png|jpe?g|gif|webp|ico|woff2?)$/i.test(f);
 
 // CDN 傳播會比 workflow 完成再慢一點,所以用輪詢而不是固定 sleep。
 // 本機除錯時可用環境變數縮短:MAX_WAIT_MS=0 就是只比對一次。
 const MAX_WAIT_MS = Number(process.env.MAX_WAIT_MS ?? 5 * 60 * 1000);
 const POLL_MS = Number(process.env.POLL_MS ?? 20 * 1000);
 
-const norm = (s) => s.replace(/\r\n/g, '\n');
-const hash = (s) => createHash('sha256').update(norm(s)).digest('hex').slice(0, 12);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const short = (buf) => createHash('sha256').update(buf).digest('hex').slice(0, 12);
 
-const localOf = (f) => readFileSync(join(ROOT, f), 'utf8');
+function hashLocal(f) {
+  const buf = readFileSync(join(ROOT, f));
+  return isBinary(f) ? short(buf) : short(buf.toString('utf8').replace(/\r\n/g, '\n'));
+}
 
 async function fetchLive(f) {
   // 加 query 與 no-cache header,避免比到中間層的舊快取
   const url = `${SITE}/${f}?_cb=${Date.now()}`;
   const r = await fetch(url, { headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' } });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.text();
+  if (isBinary(f)) return short(Buffer.from(await r.arrayBuffer()));
+  return short((await r.text()).replace(/\r\n/g, '\n'));
 }
 
 async function compareOnce() {
   const rows = [];
   for (const f of FILES) {
-    const want = hash(localOf(f));
+    const want = hashLocal(f);
     try {
-      const got = hash(await fetchLive(f));
+      const got = await fetchLive(f);
       rows.push({ file: f, want, got, match: want === got });
     } catch (e) {
       rows.push({ file: f, want, got: `抓取失敗(${e.message})`, match: false });
@@ -60,8 +79,11 @@ async function compareOnce() {
 }
 
 // 額外印出人看得懂的版本資訊,而不只是雜湊
-function swVersion(text) {
-  return text.match(/const CACHE = '([^']+)'/)?.[1] ?? '(找不到)';
+const swVersion = (text) => text.match(/const CACHE = '([^']+)'/)?.[1] ?? '(找不到)';
+
+async function liveSwVersion() {
+  const r = await fetch(`${SITE}/sw.js?_cb=${Date.now()}`, { headers: { 'Cache-Control': 'no-cache' } });
+  return swVersion(await r.text());
 }
 
 console.log(`\n  部署一致性檢查`);
@@ -88,10 +110,10 @@ for (const r of rows) {
   console.log(`  ${r.match ? '✓' : '✗'} ${r.file.padEnd(18, ' ')} repo=${r.want}  線上=${r.got}`);
 }
 
-// sw.js 的版本號額外用人話印出來
+// sw.js 的版本號額外用人話印出來(雜湊看不出是哪一版)
 try {
-  const liveSw = await fetchLive('sw.js');
-  console.log(`\n  sw 版本  repo=${swVersion(localOf('sw.js'))}  線上=${swVersion(liveSw)}`);
+  const repoVer = swVersion(readFileSync(join(ROOT, 'sw.js'), 'utf8'));
+  console.log(`\n  sw 版本  repo=${repoVer}  線上=${await liveSwVersion()}`);
 } catch { /* 上面已經報過錯了 */ }
 
 const bad = rows.filter((r) => !r.match);
@@ -104,4 +126,4 @@ if (bad.length) {
   console.log('    • Pages 的 Source 分支設定不是 main\n');
   process.exit(1);
 }
-console.log(`  ✓ ${FILES.length} 支關鍵檔案的線上版本與 repo 完全一致\n`);
+console.log(`  ✓ 全部 ${FILES.length} 支會被快取的檔案,線上版本與 repo 完全一致\n`);
