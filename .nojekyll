@@ -1,0 +1,9 @@
+此檔案讓 GitHub Pages 跳過 Jekyll,直接照原樣發佈 repo 內容。
+
+這是純靜態 PWA(沒有 Jekyll 版型、沒有 front matter、沒有 Liquid),
+跑 Jekyll 只是多一道會壞的工序:
+  - 每次部署多花時間
+  - Jekyll 預設會忽略底線開頭的檔案/資料夾,哪天新增這種檔名會靜靜消失
+  - .md 會被轉成 .html,對這個專案毫無意義
+
+檔案內容不重要,存在本身就是開關。

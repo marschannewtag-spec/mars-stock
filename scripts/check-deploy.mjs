@@ -120,9 +120,12 @@ const bad = rows.filter((r) => !r.match);
 console.log('  ' + '─'.repeat(56));
 if (bad.length) {
   console.log(`  ✗ ${bad.length} 支檔案的線上版本與 repo 不一致\n`);
-  console.log('  可能原因:');
-  console.log('    • Pages 還在部署 / CDN 尚未傳播(等幾分鐘重跑 workflow_dispatch)');
-  console.log('    • 這幾支檔案根本沒 push 上去(最常見:只更新一半)');
+  console.log('  可能原因(按發生機率排):');
+  console.log('    • Pages 部署失敗 —— 去 Actions 看 "pages build and deployment"。');
+  console.log('      特別注意:連續快速推兩次會讓前一次的部署被取消,可能卡住部署鎖,');
+  console.log('      使下一次的 deploy 步驟失敗(build 成功但 deploy 失敗)。再推一次通常就好。');
+  console.log('    • 這幾支檔案根本沒 push 上去(只更新一半)');
+  console.log('    • Pages 還在部署 / CDN 尚未傳播(等幾分鐘再重跑一次)');
   console.log('    • Pages 的 Source 分支設定不是 main\n');
   process.exit(1);
 }
