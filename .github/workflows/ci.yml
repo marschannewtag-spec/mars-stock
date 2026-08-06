@@ -36,3 +36,9 @@ jobs:
           # (PR 的 HEAD 是 merge commit,HEAD~1 正好是 base,語意也對)。
           VERIFY_BASE: ${{ github.event.before }}
         run: node scripts/verify.mjs
+
+      # 驗證「驗證程式」自己還有沒有效 —— 逐項弄壞再還原,確認 verify 真的會紅燈。
+      # 全綠只證明「現在沒事」,不證明「它抓得到事」;檢查是會悄悄空殼化的。
+      # 這一步會改動檔案再還原,所以放在最後,而且它自己會擋髒工作區。
+      - name: 驗證程式自我測試
+        run: node scripts/verify-selftest.mjs

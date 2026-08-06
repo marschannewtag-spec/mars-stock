@@ -139,19 +139,25 @@ Worker 的作用:**把 API key 藏起來**(前端永遠看不到)+ **解 CORS**�
 架構腐爛和「只更新一半」這兩個病,交給 CI 顧,不靠記憶力。
 
 ```bash
-node scripts/verify.mjs        # 8 項架構驗證(本機隨時可跑)
-node scripts/check-deploy.mjs  # 比對線上檔案是否真的等於 repo
+node scripts/verify.mjs           # 8 項架構驗證(本機隨時可跑)
+node scripts/verify-selftest.mjs  # 確認那 8 項自己沒變成空殼(需乾淨工作區)
+node scripts/check-deploy.mjs     # 比對線上檔案是否真的等於 repo
 ```
 
 | 何時 | 跑什麼 | 擋什麼 |
 |---|---|---|
-| 每次 push / PR | `ci.yml` → `verify.mjs` | 壞版本進不了 main |
+| 每次 push / PR | `ci.yml` → `verify.mjs` + `verify-selftest.mjs` | 壞版本進不了 main;檢查本身空殼化 |
 | Pages 部署完成後 | `deploy-check.yml` → `check-deploy.mjs` | 「sw 版本對了但 js 沒上去」 |
 | 一年一次(人工) | [`docs/ANNUAL-HEALTH-CHECK.md`](docs/ANNUAL-HEALTH-CHECK.md) | CI 看不到的:資料源變更、策略失效、資料涵蓋率 |
 
 `verify.mjs` 的 8 項每一項都對應一個**真的踩過的坑**:語法、import 圖完整性
 (抓「語法過但函式被巢狀化」)、出場不變量的行為測試、`sw.js` SHELL 一致性、
 版本條件式遞增、`config.js` 9 個 key、根目錄不得有重複 `config.js`、金鑰洩漏。
+
+`verify-selftest.mjs` 則是「驗證驗證程式」:逐項把專案刻意弄壞,確認 `verify.mjs`
+真的會紅燈,然後還原。**全綠只證明「現在沒事」,不證明「它抓得到事」** ——
+檢查會因為重構或把值寫死而悄悄變成永遠通過的空殼,而你不會發現,因為它是綠的。
+(開發時它就抓到一次:sw 版本檢查因為測試裡寫死版本字串而失效。)
 
 > CI 擋得掉「程式壞掉」,擋不掉「邏輯正確但策略失效」。後者只有年度健檢的
 > 六姿態 A/B 複驗和你的交易紀錄會告訴你 —— 所以那份清單不是可選項。

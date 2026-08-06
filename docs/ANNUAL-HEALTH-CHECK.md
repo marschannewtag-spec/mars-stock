@@ -42,6 +42,9 @@ CI 能擋「程式壞掉」,擋不了這三件事:
 
 ```
 跑 node scripts/verify.mjs,貼出完整輸出。
+再跑 node scripts/verify-selftest.mjs(需乾淨工作區),貼出完整輸出 ——
+這是確認上面那 8 項檢查自己沒有變成「永遠通過的空殼」。
+任何一項顯示「測試已失效」,代表該檢查現在等於沒在測,要優先處理。
 另外確認並回報:
   - js/strategy.js 的 generateSells 出場條件仍只有 ATR 停損 + 移動停利 + 階梯停利
   - js/presets.js 的 composite 參數與去年的 health 報告是否一致(逐項列出)

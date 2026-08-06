@@ -89,14 +89,23 @@
 | 工具 | 何時跑 | 管什麼 |
 |---|---|---|
 | `scripts/verify.mjs` | 本機隨時 / CI 每次 push | 8 項架構驗證 |
+| `scripts/verify-selftest.mjs` | CI 每次 push | 驗證上面那 8 項自己還有沒有效 |
 | `.github/workflows/ci.yml` | push、PR | 壞版本進不了 main |
 | `.github/workflows/deploy-check.yml` | Pages 部署完成後 | 線上檔案真的等於 repo |
 | `docs/ANNUAL-HEALTH-CHECK.md` | 一年一次(人工) | CI 看不到的那些事 |
 
 ```bash
-node scripts/verify.mjs        # 架構驗證
-node scripts/check-deploy.mjs  # 線上一致性(部署後)
+node scripts/verify.mjs           # 架構驗證
+node scripts/verify-selftest.mjs  # 確認上面那些檢查沒有變成空殼(需乾淨工作區)
+node scripts/check-deploy.mjs     # 線上一致性(部署後)
 ```
+
+> **改 `verify.mjs` 之後一定要跑一次 selftest。** 綠燈只證明「現在沒事」,
+> 不證明「它抓得到事」—— 檢查會因為重構、改名、或把值寫死而悄悄空殼化,
+> 而你不會發現,因為它是綠的。
+>
+> ⚠️ selftest 會修改並還原檔案,**只能在乾淨的工作區跑**(它自己會擋)。
+> 順序永遠是:先 commit,再跑 selftest。
 
 ---
 
