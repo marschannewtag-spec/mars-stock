@@ -142,13 +142,15 @@ Worker 的作用:**把 API key 藏起來**(前端永遠看不到)+ **解 CORS**�
 node scripts/verify.mjs           # 8 項架構驗證(本機隨時可跑)
 node scripts/verify-selftest.mjs  # 確認那 8 項自己沒變成空殼(需乾淨工作區)
 node scripts/check-deploy.mjs     # 比對線上檔案是否真的等於 repo
+node scripts/check-worker.mjs     # 三個外部資料源還活著嗎 + CORS 鎖了沒
 ```
 
 | 何時 | 跑什麼 | 擋什麼 |
 |---|---|---|
 | 每次 push / PR | `ci.yml` → `verify.mjs` + `verify-selftest.mjs` | 壞版本進不了 main;檢查本身空殼化 |
 | Pages 部署完成後 | `deploy-check.yml` → `check-deploy.mjs` | 「sw 版本對了但 js 沒上去」 |
-| 一年一次(人工) | [`docs/ANNUAL-HEALTH-CHECK.md`](docs/ANNUAL-HEALTH-CHECK.md) | CI 看不到的:資料源變更、策略失效、資料涵蓋率 |
+| 每週一(自動) | `data-source-check.yml` → `check-worker.mjs` | 外部 API 停用/改格式(FMP 幹過一次) |
+| 一年一次(人工) | [`docs/ANNUAL-HEALTH-CHECK.md`](docs/ANNUAL-HEALTH-CHECK.md) | CI 看不到的:策略失效、長歷史涵蓋率 |
 
 `verify.mjs` 的 8 項每一項都對應一個**真的踩過的坑**:語法、import 圖完整性
 (抓「語法過但函式被巢狀化」)、出場不變量的行為測試、`sw.js` SHELL 一致性、

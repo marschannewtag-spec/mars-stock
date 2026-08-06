@@ -27,7 +27,7 @@ export default {
 
     // CORS 預檢
     if (request.method === 'OPTIONS') {
-      return withCORS(new Response(null, { status: 204 }), env);
+      return withCORS(new Response(null, { status: 204 }), env, request);
     }
 
     if (url.pathname === '/timeseries') {
@@ -35,17 +35,17 @@ export default {
       const outputsize = url.searchParams.get('outputsize') || '260';
 
       if (!symbolsParam) {
-        return withCORS(json({ error: 'symbols 參數必填' }, 400), env);
+        return withCORS(json({ error: 'symbols 參數必填' }, 400), env, request);
       }
       const list = symbolsParam.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
       if (list.length === 0) {
-        return withCORS(json({ error: 'symbols 為空' }, 400), env);
+        return withCORS(json({ error: 'symbols 為空' }, 400), env, request);
       }
       if (list.length > MAX_SYMBOLS_PER_CALL) {
-        return withCORS(json({ error: `一次最多 ${MAX_SYMBOLS_PER_CALL} 檔(免費層限制)` }, 400), env);
+        return withCORS(json({ error: `一次最多 ${MAX_SYMBOLS_PER_CALL} 檔(免費層限制)` }, 400), env, request);
       }
       if (!env.TD_API_KEY) {
-        return withCORS(json({ error: 'Worker 未設定 TD_API_KEY secret' }, 500), env);
+        return withCORS(json({ error: 'Worker 未設定 TD_API_KEY secret' }, 500), env, request);
       }
 
       const api = 'https://api.twelvedata.com/time_series'
@@ -60,12 +60,12 @@ export default {
         const r = await fetch(api, { cf: { cacheTtl: 300, cacheEverything: true } });
         raw = await r.json();
       } catch (e) {
-        return withCORS(json({ error: '打 Twelve Data 失敗', detail: String(e) }, 502), env);
+        return withCORS(json({ error: '打 Twelve Data 失敗', detail: String(e) }, 502), env, request);
       }
 
       // Twelve Data 錯誤(key 無效 / 額度用盡 429 等)會回 { status:'error', ... }
       if (raw && raw.status === 'error') {
-        return withCORS(json({ error: 'twelvedata', code: raw.code, message: raw.message }, 502), env);
+        return withCORS(json({ error: 'twelvedata', code: raw.code, message: raw.message }, 502), env, request);
       }
 
       // 統一格式:單檔時 Twelve Data 直接回 {meta,values};多檔時回 {SYMBOL:{...}}
@@ -80,15 +80,15 @@ export default {
         }
       }
 
-      return withCORS(json(normalized), env);
+      return withCORS(json(normalized), env, request);
     }
 
     // ── 長歷史(回測用):代理 Tiingo EOD,回調整後 OHLC ──
     if (url.pathname === '/history') {
       const symbol = (url.searchParams.get('symbol') || '').trim();
       const years = parseInt(url.searchParams.get('years') || '16', 10) || 16;
-      if (!symbol) return withCORS(json({ error: 'symbol 必填' }, 400), env);
-      if (!env.TIINGO_KEY) return withCORS(json({ error: 'Worker 未設定 TIINGO_KEY secret' }, 500), env);
+      if (!symbol) return withCORS(json({ error: 'symbol 必填' }, 400), env, request);
+      if (!env.TIINGO_KEY) return withCORS(json({ error: 'Worker 未設定 TIINGO_KEY secret' }, 500), env, request);
 
       const d1 = new Date(); d1.setFullYear(d1.getFullYear() - years);
       const startDate = d1.toISOString().slice(0, 10);
@@ -103,11 +103,11 @@ export default {
         });
         data = await r.json();
       } catch (e) {
-        return withCORS(json({ error: 'tiingo 抓取失敗', detail: String(e) }, 502), env);
+        return withCORS(json({ error: 'tiingo 抓取失敗', detail: String(e) }, 502), env, request);
       }
       // 成功回陣列;失敗會回物件 { detail: "..." }
       if (!Array.isArray(data)) {
-        return withCORS(json({ symbol: symbol.toUpperCase(), bars: [], note: (data && data.detail) || 'tiingo 無資料' }), env);
+        return withCORS(json({ symbol: symbol.toUpperCase(), bars: [], note: (data && data.detail) || 'tiingo 無資料' }), env, request);
       }
 
       const bars = [];
@@ -118,7 +118,7 @@ export default {
         if (isNaN(c) || isNaN(h) || isNaN(l)) continue;
         bars.push({ d: (v.date || '').slice(0, 10), o, h, l, c });
       }
-      return withCORS(json({ symbol: symbol.toUpperCase(), bars }), env);
+      return withCORS(json({ symbol: symbol.toUpperCase(), bars }), env, request);
     }
 
     // ── 熱門漲幅榜(自動找熱門):代理 FMP stable gainers/actives/losers ──
@@ -127,7 +127,7 @@ export default {
       // FMP 新版 stable 端點(舊 v3/gainers 已停用)
       const stableMap = { gainers: 'biggest-gainers', losers: 'biggest-losers', actives: 'most-actives' };
       const path = stableMap[type] || 'biggest-gainers';
-      if (!env.FMP_API_KEY) return withCORS(json({ error: 'Worker 未設定 FMP_API_KEY secret' }, 500), env);
+      if (!env.FMP_API_KEY) return withCORS(json({ error: 'Worker 未設定 FMP_API_KEY secret' }, 500), env, request);
 
       const api = `https://financialmodelingprep.com/stable/${path}?apikey=${env.FMP_API_KEY}`;
       let data;
@@ -135,10 +135,10 @@ export default {
         const r = await fetch(api, { cf: { cacheTtl: 600, cacheEverything: true } });
         data = await r.json();
       } catch (e) {
-        return withCORS(json({ error: 'fmp 抓取失敗', detail: String(e) }, 502), env);
+        return withCORS(json({ error: 'fmp 抓取失敗', detail: String(e) }, 502), env, request);
       }
       if (!Array.isArray(data)) {
-        return withCORS(json({ movers: [], note: (data && (data['Error Message'] || data.message || data.Information)) || 'fmp 無資料' }), env);
+        return withCORS(json({ movers: [], note: (data && (data['Error Message'] || data.message || data.Information)) || 'fmp 無資料' }), env, request);
       }
 
       const movers = data.map((v) => {
@@ -146,15 +146,15 @@ export default {
         if (typeof pct === 'string') pct = parseFloat(pct.replace(/[%()]/g, ''));
         return { symbol: v.symbol, name: v.name || v.symbol, price: v.price, changePct: (pct ?? 0) / 100 };
       }).filter((m) => m.symbol);
-      return withCORS(json({ type: path, movers }), env);
+      return withCORS(json({ type: path, movers }), env, request);
     }
 
     // ── 市值(補完 Minervini「市值>$20億」那關):FMP profile,免費 ──
     if (url.pathname === '/marketcap') {
       const list = (url.searchParams.get('symbols') || '').split(',')
         .map((s) => s.trim().toUpperCase()).filter(Boolean).slice(0, 25);
-      if (!list.length) return withCORS(json({ error: 'symbols 必填' }, 400), env);
-      if (!env.FMP_API_KEY) return withCORS(json({ error: 'Worker 未設定 FMP_API_KEY secret' }, 500), env);
+      if (!list.length) return withCORS(json({ error: 'symbols 必填' }, 400), env, request);
+      if (!env.FMP_API_KEY) return withCORS(json({ error: 'Worker 未設定 FMP_API_KEY secret' }, 500), env, request);
 
       const out = {};
       await Promise.all(list.map(async (sym) => {
@@ -167,10 +167,10 @@ export default {
           out[sym] = rec ? (rec.marketCap ?? rec.mktCap ?? null) : null;
         } catch (e) { out[sym] = null; }
       }));
-      return withCORS(json({ marketCaps: out }), env);
+      return withCORS(json({ marketCaps: out }), env, request);
     }
 
-    return withCORS(json({ error: 'not found' }, 404), env);
+    return withCORS(json({ error: 'not found' }, 404), env, request);
   },
 };
 
@@ -182,11 +182,36 @@ function json(obj, status = 200) {
   });
 }
 
-function withCORS(resp, env) {
-  // 想鎖來源就把 * 換成你的網域(例:https://你的帳號.github.io),避免額度被別人用掉
-  const origin = (env && env.ALLOWED_ORIGIN) ? env.ALLOWED_ORIGIN : '*';
-  resp.headers.set('Access-Control-Allow-Origin', origin);
+// ---- CORS ----
+//
+// ALLOWED_ORIGIN(Cloudflare 的一般變數,不是 secret)支援逗號分隔的多個來源:
+//   https://marschannewtag-spec.github.io,http://127.0.0.1:8000,http://localhost:8000
+// 只填一個網域的話,本機用 python -m http.server 測試就會整個被擋掉 ——
+// 所以務必把本機那兩個也加進去,否則你之後沒辦法在本地 debug。
+//
+// 沒設 ALLOWED_ORIGIN -> 回 '*'(維持原本行為,任何網站都能用)。
+//
+// ⚠️ 誠實界定:CORS 是「瀏覽器」才遵守的規則。
+//    設了 ALLOWED_ORIGIN,擋得住「別的網站用 JS 呼叫你的 Worker」——
+//    也就是最常見的順手盜用。但擋不住 curl / 腳本 / 爬蟲,它們根本不看
+//    這個標頭。要擋那些,需要 Cloudflare 的 Rate Limiting 規則(儀表板設定),
+//    這支 Worker 的程式碼做不到。
+function withCORS(resp, env, request) {
+  const allowed = String((env && env.ALLOWED_ORIGIN) || '')
+    .split(',').map((s) => s.trim()).filter(Boolean);
+
+  let allow = '*';
+  if (allowed.length) {
+    const origin = request && request.headers.get('Origin');
+    // 比對得到就回「那一個」來源(帶具體來源時規格不允許回 *);
+    // 比對不到就回清單第一個 -> 瀏覽器會擋下,這正是我們要的結果。
+    allow = (origin && allowed.includes(origin)) ? origin : allowed[0];
+  }
+
+  resp.headers.set('Access-Control-Allow-Origin', allow);
   resp.headers.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
   resp.headers.set('Access-Control-Allow-Headers', 'Content-Type');
+  // 回應會依 Origin 而異,不加 Vary 會讓快取把某個來源的回應餵給另一個來源
+  if (allowed.length) resp.headers.set('Vary', 'Origin');
   return resp;
 }

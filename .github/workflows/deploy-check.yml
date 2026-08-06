@@ -13,16 +13,28 @@
 name: deploy-check
 
 on:
+  # 主要觸發:Pages 部署完成後才驗,最準確。
   workflow_run:
     workflows: ["pages build and deployment"]
     types: [completed]
+  # 後備觸發:workflow_run 這類 workflow 必須「已經存在於預設分支」才會被觸發,
+  # 所以「第一次把這支檔案推上去」的那一次不會自動跑。加上 push 當後備,
+  # 第一次就有保護。腳本本來就是輪詢等 CDN,吸收得掉部署延遲。
+  push:
+    branches: [main]
   workflow_dispatch:        # 想手動重驗時用
+
+# 同一個 commit 只留一個執行中的檢查。push 觸發的會先跑,
+# 等 workflow_run 觸發的較準確版本進來時,自動取消前者。
+concurrency:
+  group: deploy-check-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: true
 
 jobs:
   check:
     # 只有部署成功才值得驗;部署本身失敗的話 GitHub 已經會通知你了
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      github.event_name != 'workflow_run' ||
       github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
@@ -38,4 +50,7 @@ jobs:
       - name: 比對線上檔案與 repo
         env:
           SITE_URL: https://marschannewtag-spec.github.io/mars-stock
+          # push 觸發時 Pages 還沒開始部署,要等比較久;
+          # workflow_run 觸發時通常一兩次輪詢就過了,設長一點也不吃虧。
+          MAX_WAIT_MS: '480000'
         run: node scripts/check-deploy.mjs

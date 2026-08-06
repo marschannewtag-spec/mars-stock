@@ -90,14 +90,15 @@
 |---|---|---|
 | `scripts/verify.mjs` | 本機隨時 / CI 每次 push | 8 項架構驗證 |
 | `scripts/verify-selftest.mjs` | CI 每次 push | 驗證上面那 8 項自己還有沒有效 |
-| `.github/workflows/ci.yml` | push、PR | 壞版本進不了 main |
-| `.github/workflows/deploy-check.yml` | Pages 部署完成後 | 線上檔案真的等於 repo |
+| `scripts/check-deploy.mjs` | Pages 部署完成後 | 線上檔案真的等於 repo |
+| `scripts/check-worker.mjs` | 每週一自動 | 三個外部資料源的端點與回傳格式 |
 | `docs/ANNUAL-HEALTH-CHECK.md` | 一年一次(人工) | CI 看不到的那些事 |
 
 ```bash
 node scripts/verify.mjs           # 架構驗證
 node scripts/verify-selftest.mjs  # 確認上面那些檢查沒有變成空殼(需乾淨工作區)
 node scripts/check-deploy.mjs     # 線上一致性(部署後)
+node scripts/check-worker.mjs     # 資料源健康 + CORS 設定狀態
 ```
 
 > **改 `verify.mjs` 之後一定要跑一次 selftest。** 綠燈只證明「現在沒事」,

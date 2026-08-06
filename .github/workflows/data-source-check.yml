@@ -1,0 +1,38 @@
+# =============================================================
+# data-source-check.yml — 每週自動檢查三個外部資料源還活著
+# -------------------------------------------------------------
+# 為什麼是每週不是每年:
+#   FMP 停用過 legacy 的 v3/gainers 端點,是壞掉之後才發現的。
+#   外部 API 變更不會通知你,而年度健檢一年才一次 —— 中間壞掉的話
+#   你要到隔年才知道。每週檢查把「發現壞掉」的延遲從一年壓到七天。
+#
+# 失敗時 GitHub 會寄信給 repo 擁有者,這就是通知機制。
+#
+# ⚠️ GitHub 的排程 workflow 在 repo 連續 60 天沒有活動後會被自動停用。
+#    長期沒動這個專案的話,記得回來看它是不是被關掉了。
+# =============================================================
+name: data-source-check
+
+on:
+  schedule:
+    # 每週一 02:00 UTC = 台北時間週一早上 10:00。
+    # 挑週一是因為此時最新的日線是上週五收盤(3 天前),
+    # 還在「新鮮度警告」的門檻(5 天)之內,不會誤報。
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: 檢查 Worker 四個端點 + CORS 設定
+        env:
+          WORKER_URL: https://stock.marschannewtag.workers.dev
+          SITE_ORIGIN: https://marschannewtag-spec.github.io
+        run: node scripts/check-worker.mjs

@@ -23,18 +23,20 @@ CI 能擋「程式壞掉」,擋不了這三件事:
 
 ## 第 1 項:資料源健康
 
+> **這一項現在已經每週自動跑了**(`data-source-check.yml`),壞掉時 GitHub 會寄信給你。
+> 年度健檢只需要確認「排程還活著」而已。
+
 ```
-檢查三個資料源的端點是否仍正常。實際打一次每個 Worker 端點,
-驗證回傳格式沒變(不是只看 HTTP 200):
-  /timeseries?symbols=SPY,AAPL&outputsize=3   -> 每檔要有 values[] 且含 open/high/low/close
-  /history?symbol=SPY&years=16                 -> bars[] 要有 d/o/h/l/c,且最早一筆接近 16 年前
-  /movers?type=gainers                         -> movers[] 要有 symbol/name/price/changePct
-  /marketcap?symbols=AAPL                      -> marketCaps 要有數值
-回報:每個端點的狀態、回傳筆數、最新一筆日期、以及任何欄位名稱的變化。
+跑 node scripts/check-worker.mjs,貼出完整輸出。
+另外到 GitHub -> Actions -> data-source-check,確認它最近有在跑 ——
+GitHub 的排程 workflow 在 repo 連續 60 天沒活動後會被自動停用,
+被停用的話按一下 Enable 重新開啟。
 不要修任何東西。
 ```
 
 **為什麼**:資料源默默改格式時,App 不會爆炸,只會算出錯的數字。
+`check-worker.mjs` 驗的是**回傳結構**而不只是 HTTP 200 —— FMP 停用
+legacy 端點那次,狀態碼是正常的。
 
 ---
 
@@ -116,9 +118,15 @@ health 報告比對:
    並到 GitHub repo → Settings → Security → Secret scanning 看有無警報。
 2. 確認 Cloudflare Worker 的三個 secret 都還在:TD_API_KEY / TIINGO_KEY / FMP_API_KEY。
 3. 跑 node scripts/check-deploy.mjs,確認線上版本與 repo 一致。
-4. 確認 Worker 的 ALLOWED_ORIGIN 設定(沒設 = 任何網站都能用你的額度)。
+4. check-worker.mjs 的「CORS 鎖來源」那一項是 ✓ 還是 ⚠(見第 1 項的輸出)。
 回報狀態,不要修。
 ```
+
+> **關於 ALLOWED_ORIGIN 的誠實界定:** 設了它,擋得住「別的網站用 JS 呼叫
+> 你的 Worker」——最常見的順手盜用。但 CORS 是瀏覽器才遵守的規則,
+> **擋不住 curl / 腳本 / 爬蟲**。要擋那些得用 Cloudflare 的 Rate Limiting
+> 規則(儀表板設定),Worker 程式碼做不到。
+> 別把「設了 ALLOWED_ORIGIN」當成「額度安全了」。
 
 ---
 
