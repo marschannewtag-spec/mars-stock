@@ -1,0 +1,38 @@
+# =============================================================
+# ci.yml — 每次 push / PR 自動跑架構驗證
+# -------------------------------------------------------------
+# 目的:壞掉的版本進不了 main。這是 365 天全自動的哨兵,
+#      不需要任何人為介入。
+#
+# 驗證內容見 scripts/verify.mjs(8 項,每項都對應一個真的踩過的坑)。
+# =============================================================
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:        # 也可以在 Actions 頁面手動觸發
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 「sw.js 版本 bump」檢查要比對 push 之前的那個 commit
+          # (github.event.before),它可能離現在很遠,所以抓完整歷史。
+          # 這個 repo 不到 1MB,全抓也很快。
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: 架構驗證
+        env:
+          # push 事件:跟「這次 push 之前線上是什麼」比,一次推多個 commit 才不會漏檢。
+          # PR 事件沒有 before,留空 -> verify.mjs 自動退回 HEAD~1
+          # (PR 的 HEAD 是 merge commit,HEAD~1 正好是 base,語意也對)。
+          VERIFY_BASE: ${{ github.event.before }}
+        run: node scripts/verify.mjs

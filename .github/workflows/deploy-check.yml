@@ -1,0 +1,41 @@
+# =============================================================
+# deploy-check.yml — 部署後自動驗證線上檔案真的等於 repo
+# -------------------------------------------------------------
+# 治的病:「sw.js 版本對了,但 js/ 底下某些檔沒上去」——
+#        也就是 DEPLOY 文件症狀表裡的「只更新一半」。
+#
+# 為什麼用 workflow_run 而不是固定等 N 分鐘:
+#   這個 repo 的 Pages 是 legacy branch 部署,每次 push 會自動跑
+#   GitHub 內建的 "pages build and deployment"。掛在它後面觸發,
+#   比猜一個時間準確;CDN 傳播的延遲則由腳本自己輪詢處理
+#   (每 20 秒重試,最多 5 分鐘)。
+# =============================================================
+name: deploy-check
+
+on:
+  workflow_run:
+    workflows: ["pages build and deployment"]
+    types: [completed]
+  workflow_dispatch:        # 想手動重驗時用
+
+jobs:
+  check:
+    # 只有部署成功才值得驗;部署本身失敗的話 GitHub 已經會通知你了
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 比對的基準要是「這次部署的那個 commit」,不是當下的 main
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: 比對線上檔案與 repo
+        env:
+          SITE_URL: https://marschannewtag-spec.github.io/mars-stock
+        run: node scripts/check-deploy.mjs
