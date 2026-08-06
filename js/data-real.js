@@ -6,8 +6,10 @@
 // 所以 sectors.js / strategy.js / app.js 都不用改。
 //
 // 流程:
-//   1. ensureLoaded():把 11 檔板塊 ETF + 43 檔股票的日線抓回來,
+//   1. ensureLoaded():把 11 檔板塊 ETF + 100 檔股票 + SPY = 112 個代號的日線抓回來,
 //      依免費層限制分批(每批 8 檔、間隔 60 秒),抓完存 localStorage。
+//      ⚠️ 112 檔 = 14 批,批次間隔 60 秒 -> 每天第一次開 App 要等約 13 分鐘。
+//         想秒抓就升級 Twelve Data 付費方案,把 config 的 BATCH_GAP_MS 改成 0。
 //   2. 同一天再開 App -> 直接讀 localStorage 快取,不重打 API。
 //   3. getQuotes / getSectorETFs 從快取算出跟 mock 一樣的指標欄位。
 // =============================================================

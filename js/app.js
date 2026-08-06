@@ -8,11 +8,11 @@ import { MockDataAdapter, SECTORS, UNIVERSE } from './data.js';
 import { RealDataAdapter, addExtraSymbol, removeExtraSymbol, getExtras } from './data-real.js';
 import { config } from './config.js';
 import { rankSectors } from './sectors.js';
-import { generateBuys, generateSells, buyDiagnostic, computeStops, verifyCandidate, verifyTrendTemplate, MAX_POSITIONS, STRATEGY_PARAMS } from './strategy.js';
+import { generateBuys, generateSells, buyDiagnostic, computeStops, verifyTrendTemplate, MAX_POSITIONS } from './strategy.js';
 import { quoteMetrics } from './indicators.js';
 import { Portfolio } from './portfolio.js';
-import { computeMarketGate, MARKET_PARAMS } from './market.js';
-import { putBars, getBars, putMeta, getMeta, clearAll } from './histdb.js';
+import { computeMarketGate } from './market.js';
+import { putBars, getBars, putMeta, getMeta } from './histdb.js';
 import { runRealBacktest } from './backtest-real.js';
 import { PRESETS, PRESET_ORDER } from './presets.js';
 
@@ -76,7 +76,11 @@ function recentlySoldSymbols(days) {
 }
 
 // ---- 格式化小工具 ----
+// pct:給「漲跌幅」用,會帶 +/- 號(報酬率、損益)
 const pct = (x, d = 1) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(d)}%`;
+// pctPlain:給「不是漲跌」的比例用,不加正號(勝率、回撤幅度)
+// —— 勝率顯示成「+100%」語意是錯的,它不是一個變動量。
+const pctPlain = (x, d = 1) => `${(x * 100).toFixed(d)}%`;
 const cls = (x) => (x >= 0 ? 'up' : 'down');
 const money = (x) => `$${x.toFixed(2)}`;
 
@@ -307,9 +311,9 @@ function renderPerf() {
     ${equitySVG(p.equity)}
     <div class="bt-grid">
       ${g('總報酬', pct(p.totalReturn), cls(p.totalReturn))}
-      ${g('最大回撤', pct(p.maxDD), 'down')}
+      ${g('最大回撤', pctPlain(p.maxDD), 'down')}
       ${g('交易次數', p.trades)}
-      ${g('勝率', pct(p.winRate, 0))}
+      ${g('勝率', pctPlain(p.winRate, 0))}
       ${g('平均獲利', pct(p.avgWin), 'up')}
       ${g('平均虧損', pct(p.avgLoss), 'down')}
       ${g('賺賠比', p.payoff.toFixed(2))}
@@ -387,7 +391,7 @@ function tradeRow(c) {
 
 function renderBacktest() {
   return `
-    <h2 class="block-head">長歷史資料 <span class="head-note">Stooq · ${config.HISTORY_YEARS || 16} 年 · 回測用</span></h2>
+    <h2 class="block-head">長歷史資料 <span class="head-note">Tiingo · ${config.HISTORY_YEARS || 16} 年 · 回測用</span></h2>
     <div class="warn-box">這份長歷史只給回測/驗證用,跟你每天的即時選股完全分開,存在瀏覽器 IndexedDB。
       <br>⚠️ universe 是「今天的贏家」,長歷史解決「樣本太短」,但<strong>解決不了生存者偏差</strong>——絕對報酬會偏樂觀,相對排名才可信。</div>
     ${histSection()}
@@ -404,7 +408,9 @@ function renderBacktest() {
 
     <h2 class="block-head">六姿態比較 <span class="head-note">Monte Carlo 300 次 · Calmar 排名</span></h2>
     <div class="warn-box">六個 preset 各跑<strong>兩次</strong> 16 年真實回測(A:只用 ATR/移動停利 vs B:再加板塊退燒/跌破MA20),各做 300 次 block bootstrap。
-      這是要回答:<strong>「板塊退燒」這條規則到底在幫你還是害你?</strong>(它從來沒被驗證過)
+      這是要回答:<strong>「板塊退燒」這條規則到底在幫你還是害你?</strong>
+      <br>⚠️ 上一輪跑出來 6 個姿態有 5 個 A&gt;B(B 交易次數暴增造成 whipsaw),所以<strong>日常引擎已經把這兩條規則關掉了</strong>
+      (見 <code>strategy.js</code> 的 <code>useSignalExits</code>)。這裡重跑是為了在資料變長之後複驗結論。
       <br>看<strong>相對比較</strong>就好,絕對數字仍被生存者偏差灌水。</div>
     ${mcSection()}`;
 }
@@ -456,8 +462,8 @@ function mcSection() {
       <tbody>${rows}</tbody>
     </table></div>
     <p class="hint" style="margin-top:12px">
-      <strong>A</strong> = 只用 ATR 停損 + 移動停利(你 16 年回測驗證過的那套)。
-      <strong>B</strong> = 再加上「板塊退燒 + 跌破MA20」(你每天在「今日」看到的賣出建議)。兩者參數完全相同,唯一差別就是這兩條出場規則。
+      <strong>A</strong> = 只用 ATR 停損 + 移動停利 —— <strong>這就是你每天在「今日」看到的賣出建議</strong>(16 年回測驗證過的那套)。
+      <strong>B</strong> = 再加上「板塊退燒 + 跌破MA20」,目前<strong>日常引擎沒有啟用</strong>。兩者參數完全相同,唯一差別就是這兩條出場規則。
     </p>
     <p class="hint" style="margin-top:8px">${compLine}</p>
     <p class="hint" style="margin-top:8px">結論:${verdict}</p>
@@ -478,7 +484,7 @@ function histSection() {
         <div class="bt-metric"><span>載入日期</span><b class="mono">${(histMeta.loadedAt || '').slice(0, 10)}</b></div>
       </div>
       ${spySanity ? `<p class="hint" style="margin-top:12px">SPY 抽樣驗證:${spySanity.n} 根日線 · ${spySanity.from} ~ ${spySanity.to}</p>${equitySVGfromCloses(spySanity.closes)}` : ''}
-      ${failed.length ? `<p class="empty">這幾檔 Stooq 沒回資料(限流或代號不符):${failed.join(', ')}。可再按重新載入補抓。</p>` : `<p class="hint">全部載入成功 ✓</p>`}
+      ${failed.length ? `<p class="empty">這幾檔 Tiingo 沒回資料(限流或代號不符):${failed.join(', ')}。可再按重新載入補抓。</p>` : `<p class="hint">全部載入成功 ✓</p>`}
       <button class="btn ghost wide" id="reload-hist">↻ 重新載入長歷史</button>`;
   }
   return `<p class="empty">尚未載入。按下方一次把 ${config.HISTORY_YEARS || 16} 年日線拉回來(約 1~2 分鐘)。</p>
@@ -504,11 +510,11 @@ function backtestMetrics(res) {
     <div class="bt-grid">
       ${g('總報酬', pct(m.totalReturn), cls(m.totalReturn))}
       ${g('年化 (CAGR)', pct(m.cagr), cls(m.cagr))}
-      ${g('最大回撤', pct(m.maxDD), 'down')}
+      ${g('最大回撤', pctPlain(m.maxDD), 'down')}
       ${g('夏普', m.sharpe.toFixed(2))}
       ${g('Calmar(報酬/回撤)', m.calmar.toFixed(2))}
       ${g('交易次數', m.trades)}
-      ${g('勝率', pct(m.winRate, 0))}
+      ${g('勝率', pctPlain(m.winRate, 0))}
     </div>`;
 }
 
@@ -618,6 +624,7 @@ function bindViewEvents() {
   document.querySelectorAll('[data-buy]').forEach((el) =>
     el.onclick = async () => {
       const q = state.quotes.find((x) => x.symbol === el.dataset.buy);
+      if (!q) { toast(`${el.dataset.buy} 今日無報價,無法建倉`); return; }
       const stopPrice = q.atr
         ? q.price - q.atr * DP.atrStopMult
         : q.price * (1 + DP.stopLossPct);
@@ -627,20 +634,32 @@ function bindViewEvents() {
     });
   document.querySelectorAll('[data-sell]').forEach((el) =>
     el.onclick = async () => {
-      const q = state.quotes.find((x) => x.symbol === el.dataset.sell);
-      const sig = state.sells.find((x) => x.symbol === el.dataset.sell);
+      const sym = el.dataset.sell;
+      const q = state.quotes.find((x) => x.symbol === sym);
+      const pos = portfolio.positions.find((p) => p.symbol === sym);
+      if (!pos) { toast('未持有此標的'); return; }
+
+      // 今天抓不到這檔的報價(API 失敗 / 代號失效 / 日線不足 63 根)時,
+      // 退回「最後已知價」結算,而不是讓整個按鈕丟 TypeError 卡死。
+      const stale = !q;
+      const price = q ? q.price : (pos.lastPrice ?? pos.entryPrice);
+      if (!(price > 0)) { toast(`${sym} 沒有可用價格,無法平倉`); return; }
+      const staleNote = stale ? ' · 用最後已知價' : '';
+
+      const sig = state.sells.find((x) => x.symbol === sym);
       const env = currentMarketEnv();
       let r;
       if (sig && sig.fraction != null && sig.fraction < 1) {
         // 階梯停利:部分減碼
-        r = portfolio.sellPartial(el.dataset.sell, q.price, sig.fraction, sig.reasons.join(' / '), sig.ladderIdx, env);
-        if (r.ok) toast(`已減碼 ${el.dataset.sell} ${(sig.fraction * 100).toFixed(0)}% (${pct(r.pnlPct)})`);
+        r = portfolio.sellPartial(sym, price, sig.fraction, sig.reasons.join(' / '), sig.ladderIdx, env);
+        if (r.ok) toast(`已減碼 ${sym} ${(sig.fraction * 100).toFixed(0)}% (${pct(r.pnlPct)})${staleNote}`);
       } else {
         // 全平(停損/破線/手動)
         const reason = sig ? sig.reasons.join(' / ') : '手動平倉';
-        r = portfolio.sell(el.dataset.sell, q.price, reason, env);
-        if (r.ok) toast(`已平倉 ${el.dataset.sell} (${pct(r.pnlPct)})`);
+        r = portfolio.sell(sym, price, reason, env);
+        if (r.ok) toast(`已平倉 ${sym} (${pct(r.pnlPct)})${staleNote}`);
       }
+      if (!r.ok) toast(r.msg);
       await compute(); render();
     });
   const apToggle = document.getElementById('add-pos-toggle');
@@ -950,7 +969,7 @@ function monteCarlo(rets, runs = 300, blockSize = 20) {
   };
 }
 
-// ---- 載入長歷史(Stooq via Worker)存 IndexedDB ----
+// ---- 載入長歷史(Tiingo via Worker /history)存 IndexedDB ----
 async function loadHistory() {
   histLoading = true; histProgress = '準備載入…'; render();
   const symbols = [...UNIVERSE.map((u) => u.symbol), 'SPY'];
@@ -967,7 +986,7 @@ async function loadHistory() {
       else failed.push(sym);
     } catch (e) { failed.push(sym); }
     done++;
-    await sleep(1200); // 對 Stooq 客氣,避免限流
+    await sleep(1200); // 對 Tiingo 客氣,避免限流
   }
   histMeta = {
     loadedAt: new Date().toISOString(),
