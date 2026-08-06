@@ -197,7 +197,15 @@ export function runRealBacktest({ barsBySymbol, params, market, rebalanceEvery =
   const dailyReturns = [];
   for (let i = 1; i < equity.length; i++) dailyReturns.push(equity[i].nav / equity[i - 1].nav - 1);
 
-  return { equity, metrics: computeMetrics(equity, trades), trades, dailyReturns };
+  // 一併回報「實際參與回測的股票數」。長歷史沒抓齊時,回測是跑在
+  // 股票池的一部分上 —— 這個數字必須跟著績效數字一起被看到,
+  // 否則會誤以為結論適用於全部 universe。
+  return {
+    equity, metrics: computeMetrics(equity, trades), trades, dailyReturns,
+    universeUsed: symbols.length,
+    universeTotal: UNIVERSE.length,
+    from: cal[warmup], to: cal[cal.length - 1],
+  };
 }
 
 function buildQuotes(symbols, idx, ind, date, barsBySymbol) {

@@ -59,6 +59,9 @@ async function compute() {
   // AI 水位:市場層級總開關(防禦時暫停進場)
   const mkt = await adapter.getMarketSeries();
   state.market = computeMarketGate(mkt.spy, mkt.vix, DM);
+
+  // 這批價格實際是哪一天的日線(右上角標示用)
+  state.dataDate = adapter.lastDataDate ? adapter.lastDataDate() : null;
 }
 
 // 只保留價格帶內的股票(config.PRICE_MIN ~ PRICE_MAX,下單/部位大小限制)
@@ -73,6 +76,23 @@ function recentlySoldSymbols(days) {
   return (portfolio.cashLog || [])
     .filter((c) => c.exitDate && new Date(c.exitDate).getTime() >= cutoff)
     .map((c) => c.symbol);
+}
+
+// 右上角的日期標示。
+// 以前真實模式一律寫「即時」—— 那是騙人的:免費層拿的是「日線收盤」,
+// 最新一根可能是昨天、甚至上週五。遇到連假或資料源異常回舊資料時,
+// 寫「即時」會讓你對著三天前的價格做今天的決策。
+// 現在直接標出這批價格實際的日線日期。
+function dateLabel() {
+  if (!config.USE_REAL_DATA) {
+    return state.date.toLocaleDateString('zh-TW', { month: 'long', day: 'numeric', weekday: 'short' });
+  }
+  if (!state.dataDate) return '日線';           // 舊格式快取,還不知道日期
+  const [, m, d] = state.dataDate.split('-');
+  const today = new Date().toISOString().slice(0, 10);
+  const staleDays = Math.round((new Date(today) - new Date(state.dataDate)) / 86400000);
+  // 超過 4 天 = 不只是週末,值得警告(連假或資料源卡住)
+  return `${m}/${d} 收盤${staleDays > 4 ? ` · ${staleDays} 天前` : ''}`;
 }
 
 // ---- 格式化小工具 ----
@@ -99,8 +119,8 @@ function renderToday() {
           <span class="metric-val mono">${s.open}<span class="slash">/${DAILY_MAX}</span></span></div>
         <div class="metric"><span class="metric-label">未實現均報酬</span>
           <span class="metric-val mono ${cls(s.unrealAvgPct)}">${pct(s.unrealAvgPct)}</span></div>
-        <div class="metric"><span class="metric-label">已實現累計</span>
-          <span class="metric-val mono ${cls(s.realizedSumPct)}">${pct(s.realizedSumPct)}</span></div>
+        <div class="metric"><span class="metric-label">已實現報酬</span>
+          <span class="metric-val mono ${cls(s.realizedPct)}">${pct(s.realizedPct)}</span></div>
       </div>
     </section>
 
@@ -293,6 +313,7 @@ let mcRunning = false;    // 六姿態 Monte Carlo
 let mcProgress = '';
 let mcResults = null;
 let mcError = null;
+let mcCoverage = null;    // 六姿態實際跑在幾檔上(長歷史沒抓齊時很重要)
 let histMeta = null;      // 長歷史載入狀態
 let histLoading = false;
 let histProgress = '';
@@ -454,7 +475,14 @@ function mcSection() {
        ／交易 ${comp.a.single.trades} vs ${comp.b.single.trades} 筆。`
     : '';
 
+  const cov = !mcCoverage ? ''
+    : mcCoverage.used < mcCoverage.total
+      ? `<p class="hint" style="margin:0 0 10px">⚠️ 這六組結果跑在 <strong class="down">${mcCoverage.used}/${mcCoverage.total} 檔</strong>上
+         (${mcCoverage.from} ~ ${mcCoverage.to})—— 長歷史沒抓齊,先去上面「只補抓缺少的」再重跑會更可信。</p>`
+      : `<p class="hint" style="margin:0 0 10px">參與股票 ${mcCoverage.used}/${mcCoverage.total} 檔 · ${mcCoverage.from} ~ ${mcCoverage.to}</p>`;
+
   return `
+    ${cov}
     <div class="mc-table-wrap"><table class="mc-table">
       <thead><tr>
         <th>#</th><th>姿態</th><th>A<br>ATR/移動停利</th><th>B<br>+板塊退燒</th><th>差異</th><th>較優</th><th>交易<br>A/B</th>
@@ -477,17 +505,25 @@ function histSection() {
   }
   if (histMeta) {
     const ok = histMeta.symbols.length;
+    const total = histMeta.total ?? (UNIVERSE.length + 1);
     const failed = histMeta.failed || [];
+    const coverage = total ? ok / total : 0;
     return `
       <div class="bt-grid">
-        <div class="bt-metric"><span>已載入</span><b class="mono">${ok} 檔</b></div>
+        <div class="bt-metric"><span>涵蓋率</span><b class="mono ${coverage < 0.9 ? 'down' : 'up'}">${ok}/${total} 檔</b></div>
         <div class="bt-metric"><span>載入日期</span><b class="mono">${(histMeta.loadedAt || '').slice(0, 10)}</b></div>
       </div>
+      ${coverage < 0.9 ? `<p class="hint" style="margin-top:10px">⚠️ 只有 ${(coverage * 100).toFixed(0)}% 的股票池有長歷史,
+        下面的回測就是跑在這 ${ok} 檔上 —— 結論的適用範圍比全池窄,看的時候要記得。</p>` : ''}
       ${spySanity ? `<p class="hint" style="margin-top:12px">SPY 抽樣驗證:${spySanity.n} 根日線 · ${spySanity.from} ~ ${spySanity.to}</p>${equitySVGfromCloses(spySanity.closes)}` : ''}
-      ${failed.length ? `<p class="empty">這幾檔 Tiingo 沒回資料(限流或代號不符):${failed.join(', ')}。可再按重新載入補抓。</p>` : `<p class="hint">全部載入成功 ✓</p>`}
-      <button class="btn ghost wide" id="reload-hist">↻ 重新載入長歷史</button>`;
+      ${failed.length
+        ? `<p class="empty">這 ${failed.length} 檔 Tiingo 沒回資料(限流或代號不符):${failed.join(', ')}</p>
+           <button class="btn buy wide" id="refill-hist">↻ 只補抓缺少的 ${failed.length} 檔</button>`
+        : `<p class="hint">全部載入成功 ✓</p>`}
+      <button class="btn ghost wide" id="reload-hist">↻ 全部重抓(${total} 檔,約 ${Math.ceil(total * 1.2 / 60)} 分鐘)</button>`;
   }
-  return `<p class="empty">尚未載入。按下方一次把 ${config.HISTORY_YEARS || 16} 年日線拉回來(約 1~2 分鐘)。</p>
+  return `<p class="empty">尚未載入。按下方一次把 ${config.HISTORY_YEARS || 16} 年日線拉回來
+    (${UNIVERSE.length + 1} 檔,約 ${Math.ceil((UNIVERSE.length + 1) * 1.2 / 60)} 分鐘)。</p>
     <button class="btn buy wide" id="load-hist">▶ 載入 ${config.HISTORY_YEARS || 16} 年長歷史</button>`;
 }
 
@@ -505,7 +541,13 @@ function equitySVGfromCloses(closes) {
 function backtestMetrics(res) {
   const m = res.metrics;
   const g = (label, val, c = '') => `<div class="bt-metric"><span>${label}</span><b class="mono ${c}">${val}</b></div>`;
+  const used = res.universeUsed, total = res.universeTotal;
+  const partial = used != null && total != null && used < total;
   return `
+    ${used != null ? `<p class="hint" style="margin:0 0 8px">
+      回測期間 ${res.from} ~ ${res.to} · <strong class="${partial ? 'down' : ''}">參與股票 ${used}/${total} 檔</strong>${
+        partial ? ' —— 長歷史沒抓齊,以下數字只代表這 ' + used + ' 檔的表現' : ''
+      }</p>` : ''}
     ${equitySVG(res.equity)}
     <div class="bt-grid">
       ${g('總報酬', pct(m.totalReturn), cls(m.totalReturn))}
@@ -594,8 +636,7 @@ function render() {
   const view = document.getElementById('view');
   document.querySelectorAll('.tabbar button').forEach((b) =>
     b.classList.toggle('active', b.dataset.tab === state.tab));
-  document.getElementById('date-label').textContent = config.USE_REAL_DATA
-    ? '即時' : state.date.toLocaleDateString('zh-TW', { month: 'long', day: 'numeric', weekday: 'short' });
+  document.getElementById('date-label').textContent = dateLabel();
 
   if (state.error) {
     view.innerHTML = `<div class="warn-box" style="margin-top:24px">
@@ -676,9 +717,14 @@ function bindViewEvents() {
     await compute(); render();
   };
   const loadHist = document.getElementById('load-hist');
-  if (loadHist) loadHist.onclick = () => loadHistory();
+  if (loadHist) loadHist.onclick = () => loadHistory(false);
+  const refillHist = document.getElementById('refill-hist');
+  if (refillHist) refillHist.onclick = () => loadHistory(false);   // 續傳:跳過已有的
   const reloadHist = document.getElementById('reload-hist');
-  if (reloadHist) reloadHist.onclick = () => loadHistory();
+  if (reloadHist) reloadHist.onclick = () => {
+    if (!confirm('全部重抓會把已經載入的也重新拉一遍,耗時較久也會消耗 Tiingo 額度。\n只是要補齊缺少的檔案,請用「只補抓缺少的」。\n\n確定要全部重抓?')) return;
+    loadHistory(true);
+  };
   const runReal = document.getElementById('run-real-bt');
   if (runReal) runReal.onclick = async () => {
     realBtRunning = true; render();
@@ -826,7 +872,10 @@ async function fetchCandidates(tickers) {
       const node = d[s] || d[s.toUpperCase()];
       const values = (node && node.values) || [];
       barsBySym[s] = values
-        .map((v) => ({ h: parseFloat(v.high), l: parseFloat(v.low), c: parseFloat(v.close), v: parseFloat(v.volume) }))
+        .map((v) => ({
+          d: (v.datetime || '').slice(0, 10),
+          h: parseFloat(v.high), l: parseFloat(v.low), c: parseFloat(v.close), v: parseFloat(v.volume),
+        }))
         .filter((b) => !isNaN(b.c) && !isNaN(b.h) && !isNaN(b.l));
     }
     if (i + BATCH < tickers.length && GAP > 0) { exploreProgress = '等待額度重置…'; render(); await sleep(GAP); }
@@ -925,10 +974,11 @@ async function runAllPresetsMC() {
     const mcB = monteCarlo(btB.dailyReturns, 300, 20);
     await sleep(0);
 
+    mcCoverage = { used: btA.universeUsed, total: btA.universeTotal, from: btA.from, to: btA.to };
     results.push({
       key, label: P.label,
       a: { single: btA.metrics, mc: mcA },   // 已驗證過的那套(只有 ATR/移動停利)
-      b: { single: btB.metrics, mc: mcB },   // 你每天實際在看的那套
+      b: { single: btB.metrics, mc: mcB },   // 加上板塊退燒/跌破MA20 的對照組
     });
   }
   // 以 A(已驗證基準)的 Calmar 中位排名
@@ -970,19 +1020,44 @@ function monteCarlo(rets, runs = 300, blockSize = 20) {
 }
 
 // ---- 載入長歷史(Tiingo via Worker /history)存 IndexedDB ----
-async function loadHistory() {
+//
+// force = false(預設,「補抓缺少的」):跳過 IndexedDB 裡已經有的,只補失敗那些。
+// force = true (「全部重抓」):不管有沒有,整批重來(年度健檢要更新資料時用)。
+//
+// 為什麼要有續傳:每日報價的載入本來就有續傳,長歷史卻沒有 —— 以前只要
+// 有 N 檔失敗,按「重新載入」會連已經成功的也全部重抓,再撞一次同樣的
+// 額度上限,於是那些檔案永遠補不起來。這個不對稱就是元凶。
+async function loadHistory(force = false) {
   histLoading = true; histProgress = '準備載入…'; render();
   const symbols = [...UNIVERSE.map((u) => u.symbol), 'SPY'];
+
+  // 先看看 IndexedDB 裡已經有哪些(>200 根才算數,跟寫入時的門檻一致)
+  const have = new Set();
+  if (!force) {
+    for (const sym of symbols) {
+      try { const b = await getBars(sym); if (b && b.length > 200) have.add(sym); } catch (e) { /* 當成沒有 */ }
+    }
+  }
+  const todo = symbols.filter((s) => !have.has(s));
+  if (todo.length === 0) {
+    histProgress = ''; histLoading = false;
+    toast(`${symbols.length} 檔都已載入,沒有需要補的`);
+    render();
+    return;
+  }
+
   const failed = [];
   let done = 0;
-  for (const sym of symbols) {
-    histProgress = `讀取 ${sym} … (${done}/${symbols.length})`;
+  for (const sym of todo) {
+    histProgress = have.size
+      ? `補抓 ${sym} … (${done}/${todo.length},已有 ${have.size} 檔)`
+      : `讀取 ${sym} … (${done}/${todo.length})`;
     render();
     try {
       const u = `${config.WORKER_URL.replace(/\/$/, '')}/history?symbol=${sym}&years=${config.HISTORY_YEARS || 16}`;
       const r = await fetch(u);
       const d = await r.json();
-      if (d.bars && d.bars.length > 200) await putBars(sym, d.bars);
+      if (d.bars && d.bars.length > 200) { await putBars(sym, d.bars); have.add(sym); }
       else failed.push(sym);
     } catch (e) { failed.push(sym); }
     done++;
@@ -990,7 +1065,8 @@ async function loadHistory() {
   }
   histMeta = {
     loadedAt: new Date().toISOString(),
-    symbols: symbols.filter((s) => !failed.includes(s)),
+    total: symbols.length,
+    symbols: symbols.filter((s) => have.has(s)),
     failed, years: config.HISTORY_YEARS,
   };
   await putMeta(histMeta);

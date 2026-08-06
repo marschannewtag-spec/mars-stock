@@ -101,7 +101,9 @@ export class Portfolio {
       const frac = c.fraction ?? 1;              // 部分出場只按賣掉的比例計入
       nav *= (1 + frac * c.pnlPct);
       equity.push({ i: idx + 1, nav, symbol: c.symbol, pnlPct: c.pnlPct });
-      (c.pnlPct >= 0 ? wins : losses).push(c.pnlPct);
+      // 打平(pnlPct === 0)算輸不算贏 —— 沒賺就不是贏。
+      // stats() 用同一個判準,兩個分頁的勝率才會一致。
+      (c.pnlPct > 0 ? wins : losses).push(c.pnlPct);
     });
     const totalReturn = nav / 100 - 1;
     const avgWin = wins.length ? wins.reduce((a, b) => a + b, 0) / wins.length : 0;
@@ -132,18 +134,29 @@ export class Portfolio {
     this.save();
   }
 
-  // 未實現損益統計
+  // 未實現損益統計 + 已實現報酬
+  //
+  // ⚠️ 已實現報酬必須用「賣掉的比例」加權,而且要複利 —— 跟 perf() 同一套算法。
+  //    舊版是把每筆 pnlPct 直接相加,忽略 fraction。因為階梯停利預設是開的
+  //    (+30% 減碼 1/3、+60% 再減 1/3),一筆走完階梯的交易會被重複計算 2~3 次、
+  //    每次都用全額權重,結果嚴重高估。
+  //    例:+40% 減碼 33%、剩下 +10% 出場 -> 舊版顯示 50.0%,實際只有 20.8%。
+  //    今日分頁和績效分頁從此顯示同一個數字。
   stats() {
     let unreal = 0;
     for (const p of this.positions) {
       if (p.lastPrice) unreal += (p.lastPrice - p.entryPrice) / p.entryPrice;
     }
-    const realized = this.cashLog.reduce((a, c) => a + c.pnlPct, 0);
-    const wins = this.cashLog.filter((c) => c.pnlPct > 0).length;
+    let nav = 1;
+    let wins = 0;
+    for (const c of this.cashLog) {
+      nav *= (1 + (c.fraction ?? 1) * c.pnlPct);
+      if (c.pnlPct > 0) wins++;                  // 打平算輸,與 perf() 一致
+    }
     return {
       open: this.positions.length,
       unrealAvgPct: this.positions.length ? unreal / this.positions.length : 0,
-      realizedSumPct: realized,
+      realizedPct: nav - 1,
       trades: this.cashLog.length,
       winRate: this.cashLog.length ? wins / this.cashLog.length : 0,
     };

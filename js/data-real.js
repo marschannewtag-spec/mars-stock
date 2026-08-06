@@ -98,9 +98,14 @@ export class RealDataAdapter {
 
       for (const sym of batch) {
         const values = (data[sym] && data[sym].values) || [];
-        // order=ASC:舊->新;存 OHLC(ATR 需要 high/low)
+        // order=ASC:舊->新;存 OHLC(ATR 需要 high/low)+ 日期
+        // d 一定要留:沒有它就無從得知「這些價格是哪一天的」。
+        // 遇到連假、或資料源異常回了舊資料時,畫面才有辦法誠實告訴你。
         this.series[sym] = values
-          .map((v) => ({ h: parseFloat(v.high), l: parseFloat(v.low), c: parseFloat(v.close) }))
+          .map((v) => ({
+            d: (v.datetime || '').slice(0, 10),
+            h: parseFloat(v.high), l: parseFloat(v.low), c: parseFloat(v.close),
+          }))
           .filter((b) => !isNaN(b.c) && !isNaN(b.h) && !isNaN(b.l));
       }
       this._saveCache();
@@ -178,6 +183,23 @@ export class RealDataAdapter {
     await this.ensureLoaded();
     // 回傳收盤價陣列(回測用)
     return (this.series[symbol] || []).map((b) => b.c).slice(-days);
+  }
+
+  // 最新一根日線的日期(給畫面標示「這些價格是哪一天的」)。
+  // 以 SPY 為準,沒有就退而求其次拿任一檔。
+  // 回傳 null = 快取是舊格式(沒存 d),畫面會改標示「日線」而不是假裝知道日期。
+  lastDataDate() {
+    const pick = (sym) => {
+      const bars = this.series[sym];
+      return Array.isArray(bars) && bars.length ? bars[bars.length - 1].d : null;
+    };
+    const spy = pick('SPY');
+    if (spy) return spy;
+    for (const sym of Object.keys(this.series)) {
+      const d = pick(sym);
+      if (d) return d;
+    }
+    return null;
   }
 
   // 強制重抓:清掉今天的快取,下次 ensureLoaded 會重新拉

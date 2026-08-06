@@ -273,6 +273,9 @@ export class MockDataAdapter {
   // 介面對齊(真實版才需要;模擬模式不做事)
   seedSeries() { /* no-op */ }
 
+  // 模擬資料沒有真實日期,回 null -> 畫面用模擬的日曆日期
+  lastDataDate() { return null; }
+
   // 市場水位資料(模擬):SPY + VIX
   async getMarketSeries() {
     return { spy: this.spySeries, vix: this.vixSeries };
