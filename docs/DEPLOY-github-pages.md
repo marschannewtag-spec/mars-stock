@@ -1,9 +1,13 @@
 # SignalDesk — GitHub Pages 乾淨部署清單
 
 > 核心三原則(每次更新都做,就不會再「只更新一半」):
-> 1. **整包覆蓋**所有檔案(唯一例外:`config.js`,見下)
-> 2. **確認 `sw.js` 版本號有變**(我每次出新版都會 bump,例如 v24 → v25)
-> 3. **push 後:等 CDN → Unregister SW → Ctrl+Shift+R**
+> 1. **整包覆蓋**所有檔案(唯一例外:`js/config.js`,見下)
+> 2. **確認 `sw.js` 版本號有變**(每次出新版都會 bump,例如 v25 → v26)
+> 3. **push 後:等 CDN 1~5 分鐘 → 重開 App**
+>
+> 從 v26 起,SW 註冊加了 `updateViaCache: 'none'`,瀏覽器每次都會從網路檢查 `sw.js`,
+> 配上 `skipWaiting()`,**重開 App 就會自動更新,不必再手動 Unregister**。
+> Unregister 現在只是「不想等、想立刻確認」時的手段,不是必要步驟。
 
 ---
 
@@ -77,9 +81,10 @@ git push
 
 **5. 等 GitHub Pages CDN 生效:1~5 分鐘**（不是即時,別急著測)。
 
-**6. 清瀏覽器的舊 Service Worker**
-- F12 → Application → Service Workers → **Unregister**
-- 然後 **Ctrl+Shift+R**
+**6. 重開 App**
+- 正常情況:直接關掉分頁再開,或在手機上重開 PWA,**就是最新版了**
+  (v26 起 `updateViaCache: 'none'` + `skipWaiting()` 會自動接管)。
+- 想立刻確認 / 覺得沒更新:F12 → Application → Service Workers → **Unregister** → **Ctrl+Shift+R**。
 - ❌ **絕對不要按「Clear site data」**——會清掉你的 16 年歷史 + paper trading 紀錄。
 
 ---

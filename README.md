@@ -135,7 +135,9 @@ Worker 的作用:**把 API key 藏起來**(前端永遠看不到)+ **解 CORS**�
 
 1. **交易成本** — 回測加入手續費/滑價,報酬才真實。這是目前數字最大的水分之一。
 2. **生存者偏差** — 用歷史成分股快照重建 universe,而不是拿今天的贏家回測 16 年。
-3. **`sw.js` 改 network-first** — 目前是 cache-first,所以每次更新都必須手動 Unregister。
-   把 `.js` / `.html` 改成 network-first、只讓 icons/css 走 cache-first 就能根治部署痛點。
+3. **`sw.js` 改 network-first** — 目前是 cache-first。
+   已用 `updateViaCache: 'none'` 消掉「sw.js 被 HTTP 快取 10 分鐘」的靜默空窗,
+   配上既有的 `skipWaiting()`,部署後重開 App 就會更新,實務上已經夠用。
+   真的要根治才需要把 `.js` / `.html` 改成 network-first、只讓 icons/css 走 cache-first。
 4. **自動每日更新** — 定時抓 API + 推播通知,不用手動開 App 等 13 分鐘。
 5. **訊號邏輯升級** — 成交量確認、部位加碼(pyramiding)、波動度調整部位大小。

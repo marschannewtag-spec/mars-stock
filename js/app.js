@@ -1080,7 +1080,14 @@ async function loadData() {
 document.addEventListener('DOMContentLoaded', init);
 
 // 註冊 Service Worker (PWA 離線能力)
+//
+// updateViaCache: 'none' —— 強制瀏覽器每次都從網路取 sw.js,不吃 HTTP 快取。
+// 為什麼需要:GitHub Pages 對 sw.js 送 `Cache-Control: max-age=600`,
+// 所以瀏覽器最多會拿 10 分鐘前的舊 sw.js,導致「版本已經 bump 了、
+// 但瀏覽器根本還沒發現」的靜默空窗——你在手機上看到的可能是舊策略算出來的訊號。
+// 加上 sw.js 裡本來就有的 skipWaiting() + clients.claim(),
+// 部署後重開 App 就會是最新版,不用再手動 Unregister。
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () =>
-    navigator.serviceWorker.register('./sw.js').catch(() => {}));
+    navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).catch(() => {}));
 }
