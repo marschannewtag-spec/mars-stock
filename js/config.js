@@ -21,4 +21,17 @@ export const config = {
 
   // 抓幾天日線(算 MA50 / 3M 動能需要,260 ≈ 一年交易日)
   OUTPUT_SIZE: 260,
+
+  // ── 選股價格帶(app.js 的 tradeable() 會用)──
+  // 低於 PRICE_MIN 的水餃股、高於 PRICE_MAX 的高價股都不推薦,
+  // 因為部位大小算不漂亮。這兩個沒填 = 過濾完全失效。
+  PRICE_MIN: 6,
+  PRICE_MAX: 666,
+
+  // ── 日常「今日」分頁採用的風險姿態(見 js/presets.js)──
+  // 可選:marcus / uncle / gooptions / bilaal / amber / composite
+  DAILY_PRESET: 'composite',
+
+  // ── 回測長歷史要抓幾年(Tiingo via Worker /history)──
+  HISTORY_YEARS: 16,
 };
