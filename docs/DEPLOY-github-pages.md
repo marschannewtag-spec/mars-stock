@@ -49,8 +49,34 @@ HISTORY_YEARS: 16,
 > 這 9 個 key **一個都不能少**。`app.js` 對缺失的 key 全部有 fallback,所以少了不會報錯,
 > 只會靜靜地換成預設行為(例如價格帶變成 0 ~ 無限大)。
 
-**D. Cloudflare Worker**（跟 GitHub Pages 分開,獨立部署一次）：
-Worker 貼好 `signaldesk-worker.js` + 設好三個 secret：`TD_API_KEY`、`TIINGO_KEY`、`FMP_API_KEY`。這個很少要動,只有我改 Worker 時才重貼。
+**D. Cloudflare Worker**（跟 GitHub Pages 完全分開,獨立部署)：
+Worker 貼好 `worker/signaldesk-worker.js` + 設好三個 **Secret**：`TD_API_KEY`、`TIINGO_KEY`、`FMP_API_KEY`。
+
+> ⚠️ **`git push` 不會更新 Worker。** Worker 跑在 Cloudflare,GitHub Pages 只服務前端。
+> `worker/signaldesk-worker.js` 有變動時,一定要另外去 Cloudflare 重貼一次,
+> 否則線上跑的還是舊版 —— 而且不會有任何錯誤訊息告訴你。
+
+**重貼 Worker 的步驟**(只有 `worker/` 底下有改動時才需要)：
+1. Cloudflare 儀表板 → **Workers & Pages** → 點你的 Worker → **Edit code**
+2. 全選舊的、貼上新的 `worker/signaldesk-worker.js` → **Deploy**
+3. 回到 **Settings → Variables and Secrets**,確認三個 Secret 還在(重貼程式碼不會動到它們)
+4. 驗證:
+   ```bash
+   node scripts/check-worker.mjs
+   ```
+   四個端點都要 ✓。
+
+**E. 鎖住 Worker 的來源**（選用但建議)：
+Settings → Variables and Secrets → 加一個 **一般變數(Variable,不是 Secret)**：
+```
+ALLOWED_ORIGIN = https://marschannewtag-spec.github.io,http://127.0.0.1:8000,http://localhost:8000
+```
+逗號分隔,**本機那兩個一定要留** —— 只填正式站的話,你之後用
+`python -m http.server` 在本地測試會整個被 CORS 擋掉。
+
+> 誠實界定:這擋得住「別的網站用 JS 呼叫你的 Worker」,擋不住 curl / 腳本
+> (CORS 是瀏覽器才遵守的規則)。要擋那些得用 Cloudflare 的 Rate Limiting 規則。
+> 設定後跑 `node scripts/check-worker.mjs`,該項會從 ⚠ 變成 ✓。
 
 ---
 
@@ -67,9 +93,17 @@ Worker 貼好 `signaldesk-worker.js` + 設好三個 secret：`TD_API_KEY`、`TII
 - ⚠️ **最容易出錯的地方:`js/` 要整個資料夾覆蓋**。你上次就是漏了 `js/strategy.js`,導致 sw 是新的、邏輯是舊的。**寧可整包重傳,不要挑檔案傳。**
 - 覆蓋完先在本機檢查一次,再 push:
   ```bash
-  git status --short   # 應該只看到你預期會變的檔
-  git diff --stat      # 行數對不對得上
+  git status --short        # 應該只看到你預期會變的檔
+  node scripts/verify.mjs   # 8 項架構驗證,綠了才 push
   ```
+
+**3.5. `worker/` 有沒有變?（最容易漏掉的一步)**
+```bash
+git diff --stat HEAD -- worker/
+```
+有輸出 = **Worker 程式碼改了,push 之後還要去 Cloudflare 重貼一次**(見上面 D 節)。
+`git push` 只更新 GitHub Pages 上的前端,**碰不到 Cloudflare 上的 Worker**。
+漏掉的話前端是新的、Worker 是舊的,而且不會有任何錯誤訊息。
 
 **4. push 到 GitHub**
 ```
