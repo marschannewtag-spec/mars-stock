@@ -42,25 +42,15 @@ jobs:
         with:
           node-version: '24'
 
-      # secret 沒設時,wrangler 只會丟一句
-      # 「The process '/opt/.../npx' failed with exit code 1」,完全看不出原因。
-      # 先自己檢查一次,把它變成看得懂的錯誤。
-      - name: 確認 Cloudflare secret 有設
+      # token 有問題時,wrangler 只會丟一句
+      # 「The process '/opt/.../npx' failed with exit code 1」,完全看不出是
+      # token 無效、權限不足、還是帳號 ID 錯了 —— 這三種的處理方式完全不同。
+      # 先直接問 Cloudflare,把失敗變成可行動的訊息。
+      - name: 檢查 Cloudflare token 與目標 Worker
         env:
-          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          missing=""
-          [ -z "$TOKEN" ] && missing="$missing CLOUDFLARE_API_TOKEN"
-          [ -z "$ACCOUNT" ] && missing="$missing CLOUDFLARE_ACCOUNT_ID"
-          if [ -n "$missing" ]; then
-            echo "::error::缺少 GitHub secret:$missing"
-            echo "到 repo 的 Settings -> Secrets and variables -> Actions 新增。"
-            echo "token 在 https://dash.cloudflare.com/profile/api-tokens"
-            echo "用 'Edit Cloudflare Workers' 範本建立。"
-            exit 1
-          fi
-          echo "兩個 secret 都已設定"
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/check-cf-token.mjs
 
       # 先驗過再部署 —— 語法壞掉的 Worker 不該上線
       - name: 部署前驗證
