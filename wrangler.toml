@@ -17,6 +17,13 @@ name = "stock"
 main = "worker/signaldesk-worker.js"
 compatibility_date = "2025-06-01"
 
+# 明確保留 workers.dev 網址。
+# 你的 App 直接寫死打 stock.marschannewtag.workers.dev(見 js/config.js),
+# 這個網址一旦關掉,整個 App 立刻抓不到任何資料。
+# 不寫的話要靠 wrangler 的預設行為,而預設行為是會隨版本改變的東西 ——
+# 這種「壞掉的代價很高、寫明的成本是一行」的設定就該寫明。
+workers_dev = true
+
 # ── 刻意不寫 [vars] ──
 #
 # 允許的來源清單只放一個地方:worker/signaldesk-worker.js 裡的
