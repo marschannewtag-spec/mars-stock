@@ -105,26 +105,43 @@ async function checkMarketcap() {
   } catch (e) { bad(name, e.message); }
 }
 
-// ---- 5. CORS 設定狀態 ----
-// 這一項只警告不失敗:沒設不代表壞掉,但你應該知道。
+// ---- 5. CORS 鎖來源 ----
+// 新版 Worker 程式碼有內建 DEFAULT_ALLOWED_ORIGINS,所以**永遠不會回 '*'**。
+// 也就是說「回 '*'」現在是一個精準的訊號:線上跑的是舊程式碼,還沒重新部署。
+const LOCAL_ORIGIN = 'http://127.0.0.1:8000';
 async function checkCors() {
   const name = 'CORS 鎖來源';
+  const acaoFor = async (origin) => {
+    const r = await getJson('/timeseries?symbols=AAPL&outputsize=1', { Origin: origin });
+    return { acao: r.headers.get('access-control-allow-origin'), vary: r.headers.get('vary') };
+  };
   try {
-    const evil = await getJson('/timeseries?symbols=AAPL&outputsize=1', { Origin: 'https://evil-example.test' });
-    const acao = evil.headers.get('access-control-allow-origin');
-    if (acao === '*') {
-      return warn(name,
-        'ALLOWED_ORIGIN 沒設,任何網站的 JS 都能呼叫你的 Worker、消耗你的 API 額度。\n' +
-        `      到 Cloudflare -> Worker -> Settings -> Variables 加一般變數(不是 secret):\n` +
-        `      ALLOWED_ORIGIN = ${SITE_ORIGIN},http://127.0.0.1:8000,http://localhost:8000\n` +
-        '      注意:CORS 擋得住別的網站的瀏覽器 JS,擋不住 curl / 腳本。');
+    const evil = await acaoFor('https://evil-example.test');
+
+    if (evil.acao === '*') {
+      return bad(name,
+        '回傳 * —— 線上跑的是【舊版 Worker 程式碼】,還沒重新部署。\n' +
+        '      新版內建預設來源清單,任何情況都不會回 *。\n' +
+        '      請重貼 worker/signaldesk-worker.js 到 Cloudflare(或讓 deploy-worker workflow 跑一次)。');
     }
-    const site = await getJson('/timeseries?symbols=AAPL&outputsize=1', { Origin: SITE_ORIGIN });
-    const siteAcao = site.headers.get('access-control-allow-origin');
-    if (siteAcao !== SITE_ORIGIN) {
-      return bad(name, `已鎖來源,但你自己的網站被擋了!回傳 ${siteAcao},應為 ${SITE_ORIGIN}`);
+    if (String(evil.acao || '').includes(',')) {
+      return bad(name,
+        `回傳整串逗號值(${evil.acao})—— 這是無效的 CORS 標頭,瀏覽器會拒絕所有來源,\n` +
+        '      你的網站會完全抓不到資料。這代表跑的是更舊的程式碼,請立刻重新部署。');
     }
-    return ok(name, `已鎖定(惡意來源得到 ${acao},自家網站正常放行)`);
+
+    const site = await acaoFor(SITE_ORIGIN);
+    if (site.acao !== SITE_ORIGIN) {
+      return bad(name, `你自己的網站被擋了!送 ${SITE_ORIGIN} 卻回 ${site.acao}`);
+    }
+    const local = await acaoFor(LOCAL_ORIGIN);
+    if (local.acao !== LOCAL_ORIGIN) {
+      return warn(name, `正式站正常,但本機 ${LOCAL_ORIGIN} 被擋了 —— 之後沒辦法在本地 debug`);
+    }
+    if (site.vary !== 'Origin') {
+      return warn(name, '缺少 Vary: Origin,快取可能把某個來源的回應餵給另一個來源');
+    }
+    return ok(name, `已鎖定 · 正式站與本機都放行 · 惡意來源得到 ${evil.acao}(瀏覽器會擋下)`);
   } catch (e) { bad(name, e.message); }
 }
 

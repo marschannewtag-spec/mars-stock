@@ -184,34 +184,42 @@ function json(obj, status = 200) {
 
 // ---- CORS ----
 //
-// ALLOWED_ORIGIN(Cloudflare 的一般變數,不是 secret)支援逗號分隔的多個來源:
-//   https://marschannewtag-spec.github.io,http://127.0.0.1:8000,http://localhost:8000
-// 只填一個網域的話,本機用 python -m http.server 測試就會整個被擋掉 ——
-// 所以務必把本機那兩個也加進去,否則你之後沒辦法在本地 debug。
+// 允許的來源清單,依序:
+//   1. Cloudflare 的 ALLOWED_ORIGIN 變數(逗號分隔),有設就用它
+//   2. 沒設 -> 用下面這份寫在程式碼裡的預設清單
 //
-// 沒設 ALLOWED_ORIGIN -> 回 '*'(維持原本行為,任何網站都能用)。
+// 為什麼把預設寫進程式碼:
+//   • 部署完就生效,不必再去儀表板設變數(那一步很容易忘記按 Deploy)
+//   • 設定進了版控,不會哪天在儀表板被誤刪還查不出原因
+//   • 「預設鎖住」比「預設開放」安全 —— 忘記設定的後果應該是保守的
+//
+// ⚠️ 本機那兩個來源一定要留。只留正式站的話,用 python -m http.server
+//    在本地 debug 會整個被 CORS 擋掉。
+const DEFAULT_ALLOWED_ORIGINS = [
+  'https://marschannewtag-spec.github.io',   // GitHub Pages 正式站
+  'http://127.0.0.1:8000',                   // 本機 debug
+  'http://localhost:8000',                   // 本機 debug(另一種寫法)
+];
 //
 // ⚠️ 誠實界定:CORS 是「瀏覽器」才遵守的規則。
-//    設了 ALLOWED_ORIGIN,擋得住「別的網站用 JS 呼叫你的 Worker」——
-//    也就是最常見的順手盜用。但擋不住 curl / 腳本 / 爬蟲,它們根本不看
-//    這個標頭。要擋那些,需要 Cloudflare 的 Rate Limiting 規則(儀表板設定),
-//    這支 Worker 的程式碼做不到。
+//    這份清單擋得住「別的網站用 JS 呼叫你的 Worker」—— 最常見的順手盜用。
+//    但擋不住 curl / 腳本 / 爬蟲,它們根本不看這個標頭。
+//    要擋那些,需要 Cloudflare 的 Rate Limiting 規則(儀表板設定),
+//    這支 Worker 的程式碼做不到。別把「鎖了來源」當成「額度安全了」。
 function withCORS(resp, env, request) {
-  const allowed = String((env && env.ALLOWED_ORIGIN) || '')
+  const configured = String((env && env.ALLOWED_ORIGIN) || '')
     .split(',').map((s) => s.trim()).filter(Boolean);
+  const allowed = configured.length ? configured : DEFAULT_ALLOWED_ORIGINS;
 
-  let allow = '*';
-  if (allowed.length) {
-    const origin = request && request.headers.get('Origin');
-    // 比對得到就回「那一個」來源(帶具體來源時規格不允許回 *);
-    // 比對不到就回清單第一個 -> 瀏覽器會擋下,這正是我們要的結果。
-    allow = (origin && allowed.includes(origin)) ? origin : allowed[0];
-  }
+  const origin = request && request.headers.get('Origin');
+  // 比對得到就回「那一個」來源(帶具體來源時規格不允許回 *);
+  // 比對不到就回清單第一個 -> 瀏覽器會擋下,這正是我們要的結果。
+  const allow = (origin && allowed.includes(origin)) ? origin : allowed[0];
 
   resp.headers.set('Access-Control-Allow-Origin', allow);
   resp.headers.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
   resp.headers.set('Access-Control-Allow-Headers', 'Content-Type');
   // 回應會依 Origin 而異,不加 Vary 會讓快取把某個來源的回應餵給另一個來源
-  if (allowed.length) resp.headers.set('Vary', 'Origin');
+  resp.headers.set('Vary', 'Origin');
   return resp;
 }

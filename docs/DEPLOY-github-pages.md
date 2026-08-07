@@ -56,27 +56,42 @@ Worker 貼好 `worker/signaldesk-worker.js` + 設好三個 **Secret**：`TD_API_
 > `worker/signaldesk-worker.js` 有變動時,一定要另外去 Cloudflare 重貼一次,
 > 否則線上跑的還是舊版 —— 而且不會有任何錯誤訊息告訴你。
 
-**重貼 Worker 的步驟**(只有 `worker/` 底下有改動時才需要)：
+**手動重貼 Worker**(還沒設好自動部署時)：
 1. Cloudflare 儀表板 → **Workers & Pages** → 點你的 Worker → **Edit code**
 2. 全選舊的、貼上新的 `worker/signaldesk-worker.js` → **Deploy**
-3. 回到 **Settings → Variables and Secrets**,確認三個 Secret 還在(重貼程式碼不會動到它們)
-4. 驗證:
-   ```bash
-   node scripts/check-worker.mjs
-   ```
-   四個端點都要 ✓。
+3. 驗證:`node scripts/check-worker.mjs` —— 五項都要 ✓
 
-**E. 鎖住 Worker 的來源**（選用但建議)：
-Settings → Variables and Secrets → 加一個 **一般變數(Variable,不是 Secret)**：
-```
-ALLOWED_ORIGIN = https://marschannewtag-spec.github.io,http://127.0.0.1:8000,http://localhost:8000
-```
-逗號分隔,**本機那兩個一定要留** —— 只填正式站的話,你之後用
-`python -m http.server` 在本地測試會整個被 CORS 擋掉。
+**E. 讓 Worker 自動部署**(設定一次,之後不用再手動貼)：
+
+`wrangler.toml` 和 `.github/workflows/deploy-worker.yml` 已經備好,只差兩個 secret。
+
+**① 建 Cloudflare API token**
+Cloudflare → 右上角頭像 → **My Profile** → **API Tokens** → **Create Token**
+→ 用 **Edit Cloudflare Workers** 範本 → Continue → Create → **複製那串 token**(只顯示一次)
+
+**② 找 Account ID**
+Cloudflare → Workers & Pages 頁面右側,或網址列 `dash.cloudflare.com/<這串就是>`
+
+**③ 加進 GitHub**
+repo → **Settings → Secrets and variables → Actions** → **New repository secret**,加兩個:
+
+| Name | Value |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | ① 複製的那串 |
+| `CLOUDFLARE_ACCOUNT_ID` | ② 那串 |
+
+**④ 確認 Worker 名稱**
+`wrangler.toml` 裡的 `name = "stock"` 必須跟儀表板上的 Worker 名稱**完全一致**。
+不一致的話 wrangler 會**另外新建一支** Worker,而不是更新現有的 —— 你會得到兩支、
+舊的繼續服務你的 App、新的沒人用,而且沒有任何錯誤訊息。
+
+設好之後,`worker/` 底下任何改動 push 上去就會自動部署,並自動跑部署後驗證。
+
+**允許的來源清單**寫在 `worker/signaldesk-worker.js` 的 `DEFAULT_ALLOWED_ORIGINS`,
+**不在儀表板**。要改就改程式碼 push,設定只放一個地方才不會兩邊打架。
 
 > 誠實界定:這擋得住「別的網站用 JS 呼叫你的 Worker」,擋不住 curl / 腳本
 > (CORS 是瀏覽器才遵守的規則)。要擋那些得用 Cloudflare 的 Rate Limiting 規則。
-> 設定後跑 `node scripts/check-worker.mjs`,該項會從 ⚠ 變成 ✓。
 
 ---
 

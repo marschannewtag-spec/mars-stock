@@ -1,0 +1,61 @@
+# =============================================================
+# deploy-worker.yml — worker/ 有改動就自動部署到 Cloudflare
+# -------------------------------------------------------------
+# 治的病:git push 只更新 GitHub Pages 上的前端,碰不到 Cloudflare 上的
+# Worker。以前每次改 Worker 都得記得另外去儀表板重貼一次 —— 忘了的話
+# 前端是新的、Worker 是舊的,而且完全沒有錯誤訊息。
+#
+# 需要兩個 GitHub secret(Settings -> Secrets and variables -> Actions):
+#   CLOUDFLARE_API_TOKEN   權限用 "Edit Cloudflare Workers" 範本
+#   CLOUDFLARE_ACCOUNT_ID  Cloudflare 儀表板右側可以找到
+#
+# 這兩個由你自己加,我看不到也不需要看到。
+#
+# 沒設 secret 時這支 workflow 會失敗 —— 這是刻意的,失敗比「靜靜地
+# 什麼都沒做」好:你會知道 Worker 沒有被部署。
+# =============================================================
+name: deploy-worker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'worker/**'
+      - 'wrangler.toml'
+      - '.github/workflows/deploy-worker.yml'
+  workflow_dispatch:        # 想手動重新部署時用
+
+# 同時只跑一個部署,避免兩次 push 互相覆蓋
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # 先驗過再部署 —— 語法壞掉的 Worker 不該上線
+      - name: 部署前驗證
+        run: node scripts/verify.mjs
+
+      - name: 部署到 Cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # 部署完立刻驗四個端點還活著、CORS 有正確鎖住。
+      # 部署「成功」不等於「還能用」—— 這一步才是真正的驗收。
+      - name: 部署後驗證
+        env:
+          WORKER_URL: https://stock.marschannewtag.workers.dev
+          SITE_ORIGIN: https://marschannewtag-spec.github.io
+        run: node scripts/check-worker.mjs

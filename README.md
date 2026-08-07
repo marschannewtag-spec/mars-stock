@@ -149,8 +149,12 @@ node scripts/check-worker.mjs     # 三個外部資料源還活著嗎 + CORS 鎖
 |---|---|---|
 | 每次 push / PR | `ci.yml` → `verify.mjs` + `verify-selftest.mjs` | 壞版本進不了 main;檢查本身空殼化 |
 | Pages 部署完成後 | `deploy-check.yml` → `check-deploy.mjs` | 「sw 版本對了但 js 沒上去」 |
+| `worker/` 有改動時 | `deploy-worker.yml` → wrangler + `check-worker.mjs` | 「前端更新了但 Worker 還是舊的」 |
 | 每週一(自動) | `data-source-check.yml` → `check-worker.mjs` | 外部 API 停用/改格式(FMP 幹過一次) |
 | 一年一次(人工) | [`docs/ANNUAL-HEALTH-CHECK.md`](docs/ANNUAL-HEALTH-CHECK.md) | CI 看不到的:策略失效、長歷史涵蓋率 |
+
+**Worker 的允許來源清單**寫在 `worker/signaldesk-worker.js` 的 `DEFAULT_ALLOWED_ORIGINS`
+(不在 Cloudflare 儀表板)—— 設定只放一個地方才不會兩邊打架。改了 push 就自動生效。
 
 `verify.mjs` 的 8 項每一項都對應一個**真的踩過的坑**:語法、import 圖完整性
 (抓「語法過但函式被巢狀化」)、出場不變量的行為測試、`sw.js` SHELL 一致性、

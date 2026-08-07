@@ -1,0 +1,33 @@
+# =============================================================
+# wrangler.toml — Cloudflare Worker 的部署設定
+# -------------------------------------------------------------
+# 有了這個檔,Worker 就能由 GitHub Actions 自動部署
+# (見 .github/workflows/deploy-worker.yml),不用再手動貼程式碼。
+#
+# ⚠️ name 必須跟現有的 Worker 完全一致,否則 wrangler 會另外「新建」
+#    一支 Worker,而不是更新現有的 —— 你會得到兩支,舊的那支繼續服務
+#    你的 App,新的那支沒人用,而且完全不會有錯誤訊息。
+#
+#    你的 Worker 網址是 stock.marschannewtag.workers.dev
+#    workers.dev 的網址格式是 <worker 名稱>.<帳號子網域>.workers.dev
+#    所以名稱是 "stock"。第一次自動部署前請到儀表板再確認一次。
+# =============================================================
+
+name = "stock"
+main = "worker/signaldesk-worker.js"
+compatibility_date = "2025-06-01"
+
+# ── 刻意不寫 [vars] ──
+#
+# 允許的來源清單只放一個地方:worker/signaldesk-worker.js 裡的
+# DEFAULT_ALLOWED_ORIGINS。設定放兩個地方遲早會各說各話。
+#
+# wrangler deploy 會把儀表板上的「一般變數」清空(secret 不受影響),
+# 這是刻意的 —— 它會自動修好「儀表板上有一個半設定好的 ALLOWED_ORIGIN
+# 在跟程式碼打架」這種狀態,結果永遠可預測。
+#
+# 要改允許的來源,就改程式碼裡的那個陣列,push 之後自動生效。
+#
+# ⚠️ 三把 API key(TD_API_KEY / TIINGO_KEY / FMP_API_KEY)是 secret,
+#    wrangler deploy **不會**動到它們,維持在 Cloudflare 上即可。
+#    這也是刻意的:金鑰不該進版控。
