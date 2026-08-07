@@ -952,11 +952,30 @@ async function runRealBacktestFromDB(presetKey) {
 }
 
 // 六姿態 + Monte Carlo
+//
+// ⚠️ 整段包在 try/catch 裡是必要的,不是防禦性習慣:
+//    這是一段跑 1~2 分鐘的長流程,中間任何一步拋錯,mcRunning 就會永遠
+//    停在 true —— 使用者盯著一個永遠不會停的轉圈,而且沒有任何錯誤訊息,
+//    連「它是不是還在跑」都無從判斷。失敗要看得見,而且要能重試。
 async function runAllPresetsMC() {
   mcRunning = true; mcError = null; mcResults = null; mcProgress = '讀取歷史資料…'; render();
+  try {
+    await runAllPresetsMCInner();
+  } catch (e) {
+    mcError = `回測中途失敗:${e && e.message ? e.message : e}。` +
+      '(長歷史可能不完整,或某個 preset 的資料有問題。可按重試;仍失敗請看瀏覽器 Console。)';
+    console.error('runAllPresetsMC 失敗', e);
+  } finally {
+    // 不論成功、失敗、或中途拋錯,轉圈一定要停
+    mcRunning = false;
+    render();
+  }
+}
+
+async function runAllPresetsMCInner() {
   await sleep(30);
   const barsBySymbol = await loadAllBarsFromDB();
-  if (!barsBySymbol['SPY']) { mcRunning = false; mcError = '找不到 SPY 歷史,請先載入長歷史。'; render(); return; }
+  if (!barsBySymbol['SPY']) { mcError = '找不到 SPY 歷史,請先載入長歷史。'; return; }
 
   const results = [];
   for (const key of PRESET_ORDER) {
@@ -965,12 +984,14 @@ async function runAllPresetsMC() {
     mcProgress = `${P.label} … A:只用 ATR/移動停利 (${results.length + 1}/6)`;
     render(); await sleep(30);
     const btA = runRealBacktest({ barsBySymbol, params: P.params, market: P.market, useSignalExits: false });
+    if (!btA) throw new Error(`${P.label} 的 A 組回測沒有結果(歷史資料可能太短)`);
     const mcA = monteCarlo(btA.dailyReturns, 300, 20);
     await sleep(0);
 
     mcProgress = `${P.label} … B:加板塊退燒/跌破MA20 (${results.length + 1}/6)`;
     render(); await sleep(30);
     const btB = runRealBacktest({ barsBySymbol, params: P.params, market: P.market, useSignalExits: true });
+    if (!btB) throw new Error(`${P.label} 的 B 組回測沒有結果(歷史資料可能太短)`);
     const mcB = monteCarlo(btB.dailyReturns, 300, 20);
     await sleep(0);
 
@@ -983,7 +1004,8 @@ async function runAllPresetsMC() {
   }
   // 以 A(已驗證基準)的 Calmar 中位排名
   results.sort((x, y) => (y.a.mc?.calmar.median ?? -99) - (x.a.mc?.calmar.median ?? -99));
-  mcResults = results; mcRunning = false; render();
+  mcResults = results;
+  // mcRunning / render 交給外層的 finally 統一負責,生命週期只有一個出口
 }
 
 // block bootstrap:把日報酬打散成長度相同的區塊重組,跑 runs 次,回各指標分佈
@@ -1046,11 +1068,16 @@ async function loadHistory(force = false) {
     return;
   }
 
+  // 「本來就已經有幾檔」要在迴圈開始前定住。
+  // 直接用 have.size 的話,第一檔抓成功後 have 就變非空,首次完整載入
+  // 會從「讀取」莫名其妙變成「補抓」—— 實際跑起來看到才發現。
+  const alreadyHad = have.size;
+
   const failed = [];
   let done = 0;
   for (const sym of todo) {
-    histProgress = have.size
-      ? `補抓 ${sym} … (${done}/${todo.length},已有 ${have.size} 檔)`
+    histProgress = alreadyHad
+      ? `補抓 ${sym} … (${done}/${todo.length},原有 ${alreadyHad} 檔)`
       : `讀取 ${sym} … (${done}/${todo.length})`;
     render();
     try {
