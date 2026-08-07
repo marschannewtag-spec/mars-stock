@@ -54,6 +54,23 @@ if (TOKEN !== TOKEN.trim()) {
   fail('CLOUDFLARE_API_TOKEN 前後有多餘空白或換行',
     '在 GitHub 把這個 secret 刪掉重加,貼上時注意不要多選到空格或換行。');
 }
+
+// 真的發生過:把「去哪裡拿 token 的網址」貼進了 token 欄位。
+// 這種錯誤用 /user/tokens/verify 只會回「token 無效」,看不出真正的原因,
+// 所以在這裡先攔下來並直接講白。
+if (/^https?:\/\//i.test(TOKEN) || TOKEN.includes('://') || /\s/.test(TOKEN)) {
+  fail('CLOUDFLARE_API_TOKEN 看起來是一個網址,不是 token',
+    'Cloudflare API token 是大約 40 個字元的亂碼,像這樣:\n' +
+    '  Aa1_bB2cC3dD4eE5fF6gG7hH8iI9jJ0kK1lL2mM3\n' +
+    '沒有 https://、沒有斜線、沒有空格。\n\n' +
+    '到 https://dash.cloudflare.com/profile/api-tokens\n' +
+    'Create Token -> Edit Cloudflare Workers 範本 -> Create Token,\n' +
+    '複製顯示出來的那一串(只顯示一次),貼回 GitHub 的 secret。');
+}
+if (TOKEN.length < 20) {
+  fail(`CLOUDFLARE_API_TOKEN 太短(${TOKEN.length} 個字元)`,
+    'Cloudflare API token 大約 40 個字元。是不是複製時漏掉了一段?');
+}
 if (!/^[0-9a-f]{32}$/i.test(ACCOUNT)) {
   fail(`CLOUDFLARE_ACCOUNT_ID 格式不像帳號 ID(長度 ${ACCOUNT.length})`,
     'Account ID 是 32 位十六進位字元,長得像 1adeefe81b60749ee1f28be713130246。\n' +
