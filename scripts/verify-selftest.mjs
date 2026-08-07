@@ -103,6 +103,18 @@ const cases = [
       const now = read('sw.js').match(/const CACHE = '([^']+)'/)?.[1];
       if (!prev || !now) return { skip: 'sw.js 找不到 CACHE 版本字串' };
       if (prev === now) return { skip: '本次沒有 bump 版本(純文件 commit),此測試前提不成立' };
+
+      // 這個測試的作法是「把版本改回上一版,看 verify 會不會抓到」。
+      // 但如果本次 commit 只動了 sw.js 本身,改回去之後工作區就跟 HEAD~1
+      // 完全相同 —— 沒有任何資產變動,verify 正確地回報「不需 bump」,
+      // 測試也就無從成立。這是前提不成立,不是 verify 失效。
+      const assetChanged = (git('diff', '--name-only', 'HEAD~1', '--') || '')
+        .split('\n').map((s) => s.trim())
+        .filter((f) => f && f !== 'sw.js' && /^(js\/|css\/|icons\/|index\.html$|manifest\.json$)/.test(f));
+      if (assetChanged.length === 0) {
+        return { skip: '本次只動了 sw.js 本身,改回舊版後工作區等同 HEAD~1,此測試前提不成立' };
+      }
+
       return patch('sw.js', `'${now}'`, `'${prev}'`);
     },
     restore: restoreGit('sw.js'),
