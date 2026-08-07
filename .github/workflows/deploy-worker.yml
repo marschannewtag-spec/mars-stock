@@ -42,6 +42,26 @@ jobs:
         with:
           node-version: '24'
 
+      # secret 沒設時,wrangler 只會丟一句
+      # 「The process '/opt/.../npx' failed with exit code 1」,完全看不出原因。
+      # 先自己檢查一次,把它變成看得懂的錯誤。
+      - name: 確認 Cloudflare secret 有設
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          missing=""
+          [ -z "$TOKEN" ] && missing="$missing CLOUDFLARE_API_TOKEN"
+          [ -z "$ACCOUNT" ] && missing="$missing CLOUDFLARE_ACCOUNT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::缺少 GitHub secret:$missing"
+            echo "到 repo 的 Settings -> Secrets and variables -> Actions 新增。"
+            echo "token 在 https://dash.cloudflare.com/profile/api-tokens"
+            echo "用 'Edit Cloudflare Workers' 範本建立。"
+            exit 1
+          fi
+          echo "兩個 secret 都已設定"
+
       # 先驗過再部署 —— 語法壞掉的 Worker 不該上線
       - name: 部署前驗證
         run: node scripts/verify.mjs
