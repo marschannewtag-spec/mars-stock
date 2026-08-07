@@ -456,59 +456,56 @@ function mcSection() {
       <strong>約 5~8 分鐘</strong>,中途畫面會卡住屬正常 —— 這是同步運算,不是當掉)。</p>
       <button class="btn buy wide" id="run-mc">▶ 跑 A/B 測試(六姿態 × ${MC_RUNS} 次 MC)</button>`;
   }
-  // 「差多少才算真的有差」的門檻。
-  // 用 bootstrap 分佈自己的離散度來估:中位數到 p5 的距離代表這個估計有多不穩。
-  // 兩組取較小者的 1/4 當門檻 —— 差異小於它就當作分不出高下。
-  // 這只是個保守的經驗法則,不是統計檢定(真正的檢定見下方 caveat)。
-  const noiseFloor = (r) => {
-    const sa = Math.abs(r.a.mc.calmar.median - r.a.mc.calmar.p5);
-    const sb = Math.abs(r.b.mc.calmar.median - r.b.mc.calmar.p5);
-    return Math.min(sa, sb) / 4;
-  };
+  // 判定完全交給配對檢定:95% 區間有沒有跨過 0。
+  // 跨過 0 = 這個差異可能只是抽樣造成的,不能宣稱誰比較好。
+  const 顯著 = (p) => p && (p.lo > 0 || p.hi < 0);
+  const 勝方 = (p) => (!顯著(p) ? null : (p.median > 0 ? 'A' : 'B'));
 
   const fmt = (m) => `${m.median.toFixed(2)}<br><span class="mc-p5">p5 ${m.p5.toFixed(2)}</span>`;
+  const pctStr = (x) => `${(x * 100).toFixed(0)}%`;
 
   const rows = mcResults.map((r, i) => {
-    const ca = r.a.mc.calmar.median, cb = r.b.mc.calmar.median;
-    const diff = cb - ca;
-    const floor = noiseFloor(r);
-    const 分得出 = Math.abs(diff) > floor;
+    const p = r.paired;
+    const w = 勝方(p);
+    const 區間 = p
+      ? `${p.median >= 0 ? '+' : ''}${p.median.toFixed(2)}<br><span class="mc-p5">[${p.lo.toFixed(2)}, ${p.hi.toFixed(2)}]</span>`
+      : '—';
     return `<tr class="${i === 0 ? 'mc-win' : ''}">
       <td class="mono">${i + 1}</td>
       <td>${r.label}${i === 0 ? ' 🏆' : ''}</td>
       <td class="mono">${fmt(r.a.mc.calmar)}</td>
       <td class="mono">${fmt(r.b.mc.calmar)}</td>
-      <td class="mono ${分得出 ? (diff >= 0 ? 'up' : 'down') : 'muted'}">${diff >= 0 ? '+' : ''}${diff.toFixed(2)}</td>
-      <td class="mono ${分得出 ? '' : 'muted'}">${分得出 ? (diff > 0 ? 'B' : 'A') : '無訊號'}</td>
+      <td class="mono ${w === 'A' ? 'up' : w === 'B' ? 'down' : 'muted'}">${區間}</td>
+      <td class="mono ${w ? (w === 'A' ? 'up' : 'down') : 'muted'}">${p ? pctStr(p.pAwins) : '—'}${
+        w ? `<br><span class="mc-p5">${w} 較優</span>` : `<br><span class="mc-p5">分不出</span>`}</td>
       <td class="mono">${r.a.single.trades}/${r.b.single.trades}</td>
     </tr>`;
   }).join('');
 
-  // 判定只計入「差異大於雜訊」的那些 —— 把 0.01 這種差距算進勝負是製造假訊號。
-  const decisive = mcResults.filter((r) => Math.abs(r.b.mc.calmar.median - r.a.mc.calmar.median) > noiseFloor(r));
-  const bWins = decisive.filter((r) => r.b.mc.calmar.median > r.a.mc.calmar.median).length;
-  const aWins = decisive.length - bWins;
+  // 結論只計入「95% 區間不跨 0」的那些 —— 其餘視為沒有證據,不是平手
+  const decisive = mcResults.filter((r) => 顯著(r.paired));
+  const aWins = decisive.filter((r) => 勝方(r.paired) === 'A').length;
+  const bWins = decisive.length - aWins;
   const noSignal = mcResults.length - decisive.length;
 
   const verdict = decisive.length === 0
-    ? `<strong>六個姿態全部分不出高下</strong> —— 差異都在雜訊範圍內。這種情況下應該看交易次數:A 組一律較少,而回測沒扣手續費與滑價。`
-    : bWins > aWins
-      ? `<strong class="up">板塊退燒/跌破MA20 偏向有幫助</strong>(分得出高下的 ${decisive.length} 個裡 ${bWins} 個變好${noSignal ? `,另有 ${noSignal} 個無訊號` : ''})。但仍要看交易次數是否值得。`
-      : aWins > bWins
-        ? `<strong class="down">板塊退燒/跌破MA20 偏向傷害績效</strong>(分得出高下的 ${decisive.length} 個裡 ${aWins} 個是 A 較優${noSignal ? `,另有 ${noSignal} 個無訊號` : ''})。`
-        : `A 與 B 各勝 ${aWins} 個${noSignal ? `,另有 ${noSignal} 個無訊號` : ''},沒有方向性結論。看交易次數決定。`;
+    ? `<strong>六個姿態全部分不出高下</strong> —— 每一組的 95% 區間都跨過 0。
+       這種情況下唯一站得住的判準是交易次數:B 組一律多得多,而回測沒扣手續費與滑價。`
+    : aWins > bWins
+      ? `<strong class="down">板塊退燒/跌破MA20 偏向傷害績效</strong> —— 有統計證據的 ${decisive.length} 個裡,${aWins} 個是 A 較優${noSignal ? `;另有 ${noSignal} 個分不出` : ''}。`
+      : bWins > aWins
+        ? `<strong class="up">板塊退燒/跌破MA20 偏向有幫助</strong> —— 有統計證據的 ${decisive.length} 個裡,${bWins} 個是 B 較優${noSignal ? `;另有 ${noSignal} 個分不出` : ''}。但仍要看交易次數是否值得。`
+        : `A 與 B 各勝 ${aWins} 個${noSignal ? `,另有 ${noSignal} 個分不出` : ''},沒有方向性結論。看交易次數決定。`;
 
   const comp = mcResults.find((r) => r.key === (config.DAILY_PRESET || 'composite'));
-  const compDiff = comp ? comp.b.mc.calmar.median - comp.a.mc.calmar.median : 0;
-  const compLine = comp
-    ? `你日常用的「${comp.label}」:A ${comp.a.mc.calmar.median.toFixed(2)}(p5 ${comp.a.mc.calmar.p5.toFixed(2)})
-       vs B ${comp.b.mc.calmar.median.toFixed(2)}(p5 ${comp.b.mc.calmar.p5.toFixed(2)})
-       ／交易 ${comp.a.single.trades} vs ${comp.b.single.trades} 筆。
-       ${Math.abs(compDiff) > noiseFloor(comp)
-         ? `差異 ${compDiff >= 0 ? '+' : ''}${compDiff.toFixed(2)},大於雜訊,可以當真。`
-         : `<strong>差異 ${compDiff >= 0 ? '+' : ''}${compDiff.toFixed(2)} 在雜訊範圍內,不能當作 A 或 B 比較好的證據。</strong>
-            這種情況下唯一站得住的判準是交易次數 —— 而回測沒扣手續費與滑價。`}`
-    : '';
+  const cp = comp && comp.paired;
+  const compLine = !comp ? '' : `你日常用的「${comp.label}」:交易 ${comp.a.single.trades} vs ${comp.b.single.trades} 筆。
+    ${!cp ? '' : 顯著(cp)
+      ? `<strong>A−B = ${cp.median >= 0 ? '+' : ''}${cp.median.toFixed(2)},95% 區間 [${cp.lo.toFixed(2)}, ${cp.hi.toFixed(2)}] 不跨 0
+         —— ${勝方(cp)} 確實比較好,A 贏的機率 ${pctStr(cp.pAwins)}。</strong>`
+      : `<strong>A 贏的機率 ${pctStr(cp.pAwins)},95% 區間 [${cp.lo.toFixed(2)}, ${cp.hi.toFixed(2)}] 跨過 0
+         —— 統計上分不出高下。</strong> 這種情況下唯一站得住的判準是交易次數,
+         而回測沒扣手續費與滑價 —— 打平的績效配上多 ${Math.round((comp.b.single.trades / comp.a.single.trades - 1) * 100)}% 的交易,只有壞處。`}`;
 
   const cov = !mcCoverage ? ''
     : mcCoverage.used < mcCoverage.total
@@ -520,25 +517,29 @@ function mcSection() {
     ${cov}
     <div class="mc-table-wrap"><table class="mc-table">
       <thead><tr>
-        <th>#</th><th>姿態</th><th>A<br>ATR/移動停利</th><th>B<br>+板塊退燒</th><th>差異</th><th>較優</th><th>交易<br>A/B</th>
+        <th>#</th><th>姿態</th><th>A<br>ATR/移動停利</th><th>B<br>+板塊退燒</th><th>A−B<br>95% 區間</th><th>A 贏<br>機率</th><th>交易<br>A/B</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
     <p class="hint" style="margin-top:10px">
-      每格上面是 <strong>Calmar 中位數</strong>,下面小字是 <strong>p5</strong>(1000 次 bootstrap 中最差的 5%)。
-      <strong>中位數看報酬品質,中位數到 p5 的距離看這個估計有多不穩。</strong>
-      差異小於雜訊門檻時「較優」欄會顯示<span class="muted">無訊號</span> —— 那代表分不出高下,不是平手。
+      <strong>A / B 欄</strong>:上面是 Calmar 中位數,下面小字是 p5(${MC_RUNS} 次 bootstrap 中最差的 5%)。
+      中位數看報酬品質,中位數到 p5 的距離看這個估計有多不穩。
+      <br><strong>A−B 欄</strong>:配對抽樣算出的差異中位數與 95% 區間。
+      <strong class="down">區間跨過 0 = 統計上分不出高下</strong> —— 那是「沒有證據」,不是「平手」。
+      <br><strong>A 贏機率</strong>:${MC_RUNS} 次配對抽樣中 A 較優的比例。接近 50% 就等於擲硬幣。
     </p>
     <div class="warn-box" style="margin-top:10px">
-      ⚠️ <strong>這張表不能證明 A 比 B 好(或反過來)。</strong>
-      它比的是兩組<strong>各自獨立</strong>抽樣出來的分佈,而「兩個中位數誰大」不是統計檢定 ——
-      2026 年度健檢連跑兩次就親眼看到「綜合」的勝負直接翻盤(A 贏 0.01 → B 贏 0.00)。
-      提高到 1000 次只是讓中位數更穩,<strong>並沒有回答「這個差異是真的嗎」</strong>。
+      <strong>為什麼要「配對」:</strong>每一次抽樣,A 和 B 用<strong>同一組區塊</strong> ——
+      也就是讓兩者經歷完全相同的市場路徑。共同的大跌大漲在相減時會抵銷掉,
+      剩下的才是那兩條出場規則造成的真實差異。
       <br><br>
-      真正能回答的做法是<strong>配對檢定</strong>:每一次 bootstrap 對 A 和 B 抽<strong>同一組區塊</strong>,
-      算出 A−B 的分佈,再看「A 贏的機率」。共同的市場衝擊會被抵銷,差異的估計會準得多。
-      這個還沒做 —— 要的話跟我說。
-    </p>
+      如果改用「各自獨立抽樣、再比兩個中位數」,共同衝擊會變成雜訊把差異淹掉。
+      2026 年度健檢就是那樣跑的,連跑兩次「綜合」的勝負直接翻盤
+      (A 贏 0.01 → B 贏 0.00)—— <strong>那個 0.01 從來就不是訊號</strong>。
+      <br><br>
+      ⚠️ 但要記得界線:這裡的絕對數字仍然沒扣交易成本,股票池也有生存者偏差。
+      <strong>配對檢定讓「A 和 B 誰比較好」變得可信,沒有讓「這套策略會賺多少」變得可信。</strong>
+    </div>
     <p class="hint" style="margin-top:12px">
       <strong>A</strong> = 只用 ATR 停損 + 移動停利 —— <strong>這就是你每天在「今日」看到的賣出建議</strong>(16 年回測驗證過的那套)。
       <strong>B</strong> = 再加上「板塊退燒 + 跌破MA20」,目前<strong>日常引擎沒有啟用</strong>。兩者參數完全相同,唯一差別就是這兩條出場規則。
@@ -1031,25 +1032,26 @@ async function runAllPresetsMCInner() {
   for (const key of PRESET_ORDER) {
     const P = PRESETS[key];
     // A/B:同一組參數跑兩次,唯一差別是「有沒有板塊退燒 + 跌破MA20 出場」
-    mcProgress = `${P.label} … A:只用 ATR/移動停利 (${results.length + 1}/6)`;
+    mcProgress = `${P.label} … 回測 A/B 兩組 (${results.length + 1}/6)`;
     render(); await sleep(30);
     const btA = runRealBacktest({ barsBySymbol, params: P.params, market: P.market, useSignalExits: false });
     if (!btA) throw new Error(`${P.label} 的 A 組回測沒有結果(歷史資料可能太短)`);
-    const mcA = monteCarlo(btA.dailyReturns, MC_RUNS, MC_BLOCK);
-    await sleep(0);
-
-    mcProgress = `${P.label} … B:加板塊退燒/跌破MA20 (${results.length + 1}/6)`;
-    render(); await sleep(30);
     const btB = runRealBacktest({ barsBySymbol, params: P.params, market: P.market, useSignalExits: true });
     if (!btB) throw new Error(`${P.label} 的 B 組回測沒有結果(歷史資料可能太短)`);
-    const mcB = monteCarlo(btB.dailyReturns, MC_RUNS, MC_BLOCK);
+    await sleep(0);
+
+    // 配對抽樣:一次跑完,同時得到 A、B 各自的分佈與 A−B 的分佈
+    mcProgress = `${P.label} … 配對 bootstrap ${MC_RUNS} 次 (${results.length + 1}/6)`;
+    render(); await sleep(30);
+    const pm = pairedMonteCarlo(btA.dailyReturns, btB.dailyReturns, MC_RUNS, MC_BLOCK);
     await sleep(0);
 
     mcCoverage = { used: btA.universeUsed, total: btA.universeTotal, from: btA.from, to: btA.to };
     results.push({
       key, label: P.label,
-      a: { single: btA.metrics, mc: mcA },   // 已驗證過的那套(只有 ATR/移動停利)
-      b: { single: btB.metrics, mc: mcB },   // 加上板塊退燒/跌破MA20 的對照組
+      a: { single: btA.metrics, mc: pm.a },   // 已驗證過的那套(只有 ATR/移動停利)
+      b: { single: btB.metrics, mc: pm.b },   // 加上板塊退燒/跌破MA20 的對照組
+      paired: pm.paired,                      // A−B 的分佈 + A 贏的機率
     });
   }
   // 以 A(已驗證基準)的 Calmar 中位排名
@@ -1058,36 +1060,93 @@ async function runAllPresetsMCInner() {
   // mcRunning / render 交給外層的 finally 統一負責,生命週期只有一個出口
 }
 
-// block bootstrap:把日報酬打散成長度相同的區塊重組,跑 runs 次,回各指標分佈
-function monteCarlo(rets, runs = MC_RUNS, blockSize = MC_BLOCK) {
-  const n = rets.length;
-  if (n < blockSize * 3) return { calmar: { median: 0, p5: 0 }, cagr: { median: 0, p5: 0 }, maxdd: { median: 0, worst: 0 }, sharpe: { median: 0 } };
+// =============================================================
+// pairedMonteCarlo — 配對 block bootstrap
+// -------------------------------------------------------------
+// 一次抽樣,同時得到 A 的分佈、B 的分佈,以及「A−B」的分佈。
+//
+// 關鍵在「配對」:每一輪抽出的區塊起點 A 和 B 共用。
+// 因為 A/B 是同一段日曆、同一批股票、只差兩條出場規則,共用區塊等於
+// 讓兩者經歷完全相同的市場路徑 —— 共同的大跌大漲會在相減時抵銷掉。
+//
+// 為什麼一定要這樣做:
+//   2026 年度健檢用「各自獨立抽樣、比兩個中位數」的方式跑了兩次,
+//   「綜合」的勝負直接翻盤(A 贏 0.01 → B 贏 0.00)。原因是真實差異
+//   只有 0.01,卻被各自 ±0.05 的抽樣雜訊淹沒。
+//   「兩個獨立估計值誰比較大」本來就不是統計檢定;配對之後才問得出
+//   「A 贏的機率是多少」這種可以直接下判斷的問題。
+//
+// 順帶:這樣做比原本「跑兩次獨立 monteCarlo」還省 —— 抽樣次數一樣,
+// 但多拿到差異的分佈。
+// =============================================================
+function pairedMonteCarlo(retsA, retsB, runs = MC_RUNS, blockSize = MC_BLOCK) {
+  const empty = { calmar: { median: 0, p5: 0 }, cagr: { median: 0, p5: 0 }, maxdd: { median: 0, worst: 0 }, sharpe: { median: 0 } };
+  // 兩邊都是從 warmup 跑到同一個日曆末端,長度本來就該一樣;
+  // 取 min 只是防呆,避免哪天改了 warmup 邏輯就悄悄錯位。
+  const n = Math.min(retsA.length, retsB.length);
+  if (n < blockSize * 3) return { a: empty, b: empty, paired: null };
+
   const nBlocks = Math.ceil(n / blockSize);
-  const calmars = [], cagrs = [], maxdds = [], sharpes = [];
-  for (let r = 0; r < runs; r++) {
-    const series = [];
-    for (let b = 0; b < nBlocks; b++) {
-      const start = Math.floor(Math.random() * (n - blockSize));
-      for (let k = 0; k < blockSize; k++) series.push(rets[start + k]);
+  const years = n / 252;
+
+  // 給定一組區塊起點,算出這條重組序列的各項指標
+  const statsFor = (rets, starts) => {
+    let nav = 1, peak = 1, maxDD = 0, sum = 0, sumSq = 0, count = 0;
+    for (const s of starts) {
+      for (let k = 0; k < blockSize && count < n; k++, count++) {
+        const x = rets[s + k];
+        nav *= (1 + x);
+        if (nav > peak) peak = nav;
+        const dd = nav / peak - 1;
+        if (dd < maxDD) maxDD = dd;
+        sum += x; sumSq += x * x;
+      }
+      if (count >= n) break;
     }
-    series.length = n;
-    let nav = 1, peak = 1, maxDD = 0, sum = 0;
-    for (const x of series) { nav *= (1 + x); peak = Math.max(peak, nav); maxDD = Math.min(maxDD, nav / peak - 1); sum += x; }
-    const years = n / 252;
+    const mean = sum / count;
+    const sd = Math.sqrt(Math.max(0, sumSq / count - mean * mean)) || 1e-9;
     const cagr = Math.pow(Math.max(nav, 1e-9), 1 / years) - 1;
-    const mean = sum / n;
-    let v = 0; for (const x of series) v += (x - mean) ** 2;
-    const sd = Math.sqrt(v / n) || 1e-9;
-    cagrs.push(cagr); maxdds.push(maxDD);
-    sharpes.push(mean / sd * Math.sqrt(252));
-    calmars.push(maxDD !== 0 ? cagr / Math.abs(maxDD) : 0);
+    return { cagr, maxDD, sharpe: (mean / sd) * Math.sqrt(252), calmar: maxDD !== 0 ? cagr / Math.abs(maxDD) : 0 };
+  };
+
+  const A = { calmars: [], cagrs: [], maxdds: [], sharpes: [] };
+  const B = { calmars: [], cagrs: [], maxdds: [], sharpes: [] };
+  const diffs = [];
+  let aWins = 0;
+
+  for (let r = 0; r < runs; r++) {
+    // ★ 同一組起點,A 和 B 共用 —— 這一行就是「配對」的全部意義
+    const starts = [];
+    for (let b = 0; b < nBlocks; b++) starts.push(Math.floor(Math.random() * (n - blockSize)));
+
+    const sa = statsFor(retsA, starts);
+    const sb = statsFor(retsB, starts);
+    A.calmars.push(sa.calmar); A.cagrs.push(sa.cagr); A.maxdds.push(sa.maxDD); A.sharpes.push(sa.sharpe);
+    B.calmars.push(sb.calmar); B.cagrs.push(sb.cagr); B.maxdds.push(sb.maxDD); B.sharpes.push(sb.sharpe);
+
+    const d = sa.calmar - sb.calmar;   // 正 = 這一輪 A 較優
+    diffs.push(d);
+    if (d > 0) aWins++;
   }
-  const q = (arr, p) => { const s = [...arr].sort((a, b) => a - b); return s[Math.floor(p * (s.length - 1))]; };
+
+  const q = (arr, p) => { const s = [...arr].sort((x, y) => x - y); return s[Math.floor(p * (s.length - 1))]; };
+  const pack = (S) => ({
+    calmar: { median: q(S.calmars, 0.5), p5: q(S.calmars, 0.05) },
+    cagr: { median: q(S.cagrs, 0.5), p5: q(S.cagrs, 0.05) },
+    maxdd: { median: q(S.maxdds, 0.5), worst: q(S.maxdds, 0.05) },
+    sharpe: { median: q(S.sharpes, 0.5) },
+  });
+
   return {
-    calmar: { median: q(calmars, 0.5), p5: q(calmars, 0.05) },
-    cagr: { median: q(cagrs, 0.5), p5: q(cagrs, 0.05) },
-    maxdd: { median: q(maxdds, 0.5), worst: q(maxdds, 0.05) },
-    sharpe: { median: q(sharpes, 0.5) },
+    a: pack(A),
+    b: pack(B),
+    paired: {
+      pAwins: aWins / runs,        // A 贏的機率 —— 可以直接下判斷的數字
+      median: q(diffs, 0.5),       // A−B 的中位數
+      lo: q(diffs, 0.025),         // 95% 區間下緣
+      hi: q(diffs, 0.975),         // 95% 區間上緣。區間跨過 0 = 分不出高下
+      runs,
+    },
   };
 }
 
