@@ -314,6 +314,15 @@ let mcProgress = '';
 let mcResults = null;
 let mcError = null;
 let mcCoverage = null;    // 六姿態實際跑在幾檔上(長歷史沒抓齊時很重要)
+
+// Monte Carlo 的 bootstrap 次數。單一來源 —— 文案和呼叫點都引用這個常數,
+// 免得改了次數卻忘了改畫面上的說明。
+//
+// 300 -> 1000 的理由:2026 年度健檢連跑兩次,同一份資料的 Calmar 中位數
+// 差了約 0.05,而「綜合」的 A/B 差異只有 0.01 —— 比雜訊還小,兩次結論
+// 直接翻盤。次數提高可以收斂中位數,代價是耗時約三倍。
+const MC_RUNS = 1000;
+const MC_BLOCK = 20;
 let histMeta = null;      // 長歷史載入狀態
 let histLoading = false;
 let histProgress = '';
@@ -427,8 +436,8 @@ function renderBacktest() {
         : `${realBtResult ? backtestMetrics(realBtResult) : ''}
            <button class="btn ghost wide" id="run-real-bt">▶ 用真實 16 年資料回測(綜合)</button>`}
 
-    <h2 class="block-head">六姿態比較 <span class="head-note">Monte Carlo 300 次 · Calmar 排名</span></h2>
-    <div class="warn-box">六個 preset 各跑<strong>兩次</strong> 16 年真實回測(A:只用 ATR/移動停利 vs B:再加板塊退燒/跌破MA20),各做 300 次 block bootstrap。
+    <h2 class="block-head">六姿態比較 <span class="head-note">Monte Carlo ${MC_RUNS} 次 · Calmar 排名</span></h2>
+    <div class="warn-box">六個 preset 各跑<strong>兩次</strong> 16 年真實回測(A:只用 ATR/移動停利 vs B:再加板塊退燒/跌破MA20),各做 ${MC_RUNS} 次 block bootstrap。
       這是要回答:<strong>「板塊退燒」這條規則到底在幫你還是害你?</strong>
       <br>⚠️ 上一輪跑出來 6 個姿態有 5 個 A&gt;B(B 交易次數暴增造成 whipsaw),所以<strong>日常引擎已經把這兩條規則關掉了</strong>
       (見 <code>strategy.js</code> 的 <code>useSignalExits</code>)。這裡重跑是為了在資料變長之後複驗結論。
@@ -443,36 +452,62 @@ function mcSection() {
   }
   if (mcError) return `<p class="empty">${mcError}</p><button class="btn buy wide" id="run-mc">▶ 重試</button>`;
   if (!mcResults) {
-    return `<p class="empty">六姿態 × A/B 各跑一次 + Monte Carlo(要跑 12 次回測,約 1~2 分鐘,中途會卡住屬正常)。</p>
-      <button class="btn buy wide" id="run-mc">▶ 跑 A/B 測試(六姿態 × 300 次 MC)</button>`;
+    return `<p class="empty">六姿態 × A/B 各跑一次 + Monte Carlo(12 次回測 × ${MC_RUNS} 次 bootstrap,
+      <strong>約 5~8 分鐘</strong>,中途畫面會卡住屬正常 —— 這是同步運算,不是當掉)。</p>
+      <button class="btn buy wide" id="run-mc">▶ 跑 A/B 測試(六姿態 × ${MC_RUNS} 次 MC)</button>`;
   }
+  // 「差多少才算真的有差」的門檻。
+  // 用 bootstrap 分佈自己的離散度來估:中位數到 p5 的距離代表這個估計有多不穩。
+  // 兩組取較小者的 1/4 當門檻 —— 差異小於它就當作分不出高下。
+  // 這只是個保守的經驗法則,不是統計檢定(真正的檢定見下方 caveat)。
+  const noiseFloor = (r) => {
+    const sa = Math.abs(r.a.mc.calmar.median - r.a.mc.calmar.p5);
+    const sb = Math.abs(r.b.mc.calmar.median - r.b.mc.calmar.p5);
+    return Math.min(sa, sb) / 4;
+  };
+
+  const fmt = (m) => `${m.median.toFixed(2)}<br><span class="mc-p5">p5 ${m.p5.toFixed(2)}</span>`;
+
   const rows = mcResults.map((r, i) => {
     const ca = r.a.mc.calmar.median, cb = r.b.mc.calmar.median;
-    const better = cb > ca ? 'B' : 'A';
     const diff = cb - ca;
+    const floor = noiseFloor(r);
+    const 分得出 = Math.abs(diff) > floor;
     return `<tr class="${i === 0 ? 'mc-win' : ''}">
       <td class="mono">${i + 1}</td>
       <td>${r.label}${i === 0 ? ' 🏆' : ''}</td>
-      <td class="mono">${ca.toFixed(2)}</td>
-      <td class="mono">${cb.toFixed(2)}</td>
-      <td class="mono ${diff >= 0 ? 'up' : 'down'}">${diff >= 0 ? '+' : ''}${diff.toFixed(2)}</td>
-      <td class="mono">${better === 'A' ? 'A' : 'B'}</td>
+      <td class="mono">${fmt(r.a.mc.calmar)}</td>
+      <td class="mono">${fmt(r.b.mc.calmar)}</td>
+      <td class="mono ${分得出 ? (diff >= 0 ? 'up' : 'down') : 'muted'}">${diff >= 0 ? '+' : ''}${diff.toFixed(2)}</td>
+      <td class="mono ${分得出 ? '' : 'muted'}">${分得出 ? (diff > 0 ? 'B' : 'A') : '無訊號'}</td>
       <td class="mono">${r.a.single.trades}/${r.b.single.trades}</td>
     </tr>`;
   }).join('');
 
-  // 判定:6 個姿態裡,含訊號出場(B)贏了幾個?
-  const bWins = mcResults.filter((r) => r.b.mc.calmar.median > r.a.mc.calmar.median).length;
-  const verdict = bWins >= 4
-    ? `<strong class="up">板塊退燒/跌破MA20 是有幫助的</strong>(6 個姿態中 ${bWins} 個變好)。建議保留,但可加「連續 N 天才出場」的遲滯來減少 whipsaw。`
-    : bWins <= 2
-      ? `<strong class="down">板塊退燒/跌破MA20 在傷害績效</strong>(6 個姿態中只有 ${bWins} 個變好)。建議從日常引擎移除,只留 ATR 停損 + 移動停利——那才是你驗證過的那套。`
-      : `結果分歧(6 個中 ${bWins} 個變好),沒有明確結論。建議看你日常用的「綜合」那一列決定。`;
+  // 判定只計入「差異大於雜訊」的那些 —— 把 0.01 這種差距算進勝負是製造假訊號。
+  const decisive = mcResults.filter((r) => Math.abs(r.b.mc.calmar.median - r.a.mc.calmar.median) > noiseFloor(r));
+  const bWins = decisive.filter((r) => r.b.mc.calmar.median > r.a.mc.calmar.median).length;
+  const aWins = decisive.length - bWins;
+  const noSignal = mcResults.length - decisive.length;
+
+  const verdict = decisive.length === 0
+    ? `<strong>六個姿態全部分不出高下</strong> —— 差異都在雜訊範圍內。這種情況下應該看交易次數:A 組一律較少,而回測沒扣手續費與滑價。`
+    : bWins > aWins
+      ? `<strong class="up">板塊退燒/跌破MA20 偏向有幫助</strong>(分得出高下的 ${decisive.length} 個裡 ${bWins} 個變好${noSignal ? `,另有 ${noSignal} 個無訊號` : ''})。但仍要看交易次數是否值得。`
+      : aWins > bWins
+        ? `<strong class="down">板塊退燒/跌破MA20 偏向傷害績效</strong>(分得出高下的 ${decisive.length} 個裡 ${aWins} 個是 A 較優${noSignal ? `,另有 ${noSignal} 個無訊號` : ''})。`
+        : `A 與 B 各勝 ${aWins} 個${noSignal ? `,另有 ${noSignal} 個無訊號` : ''},沒有方向性結論。看交易次數決定。`;
 
   const comp = mcResults.find((r) => r.key === (config.DAILY_PRESET || 'composite'));
+  const compDiff = comp ? comp.b.mc.calmar.median - comp.a.mc.calmar.median : 0;
   const compLine = comp
-    ? `你日常用的「${comp.label}」:A ${comp.a.mc.calmar.median.toFixed(2)} vs B ${comp.b.mc.calmar.median.toFixed(2)}
-       ／交易 ${comp.a.single.trades} vs ${comp.b.single.trades} 筆。`
+    ? `你日常用的「${comp.label}」:A ${comp.a.mc.calmar.median.toFixed(2)}(p5 ${comp.a.mc.calmar.p5.toFixed(2)})
+       vs B ${comp.b.mc.calmar.median.toFixed(2)}(p5 ${comp.b.mc.calmar.p5.toFixed(2)})
+       ／交易 ${comp.a.single.trades} vs ${comp.b.single.trades} 筆。
+       ${Math.abs(compDiff) > noiseFloor(comp)
+         ? `差異 ${compDiff >= 0 ? '+' : ''}${compDiff.toFixed(2)},大於雜訊,可以當真。`
+         : `<strong>差異 ${compDiff >= 0 ? '+' : ''}${compDiff.toFixed(2)} 在雜訊範圍內,不能當作 A 或 B 比較好的證據。</strong>
+            這種情況下唯一站得住的判準是交易次數 —— 而回測沒扣手續費與滑價。`}`
     : '';
 
   const cov = !mcCoverage ? ''
@@ -489,6 +524,21 @@ function mcSection() {
       </tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
+    <p class="hint" style="margin-top:10px">
+      每格上面是 <strong>Calmar 中位數</strong>,下面小字是 <strong>p5</strong>(1000 次 bootstrap 中最差的 5%)。
+      <strong>中位數看報酬品質,中位數到 p5 的距離看這個估計有多不穩。</strong>
+      差異小於雜訊門檻時「較優」欄會顯示<span class="muted">無訊號</span> —— 那代表分不出高下,不是平手。
+    </p>
+    <div class="warn-box" style="margin-top:10px">
+      ⚠️ <strong>這張表不能證明 A 比 B 好(或反過來)。</strong>
+      它比的是兩組<strong>各自獨立</strong>抽樣出來的分佈,而「兩個中位數誰大」不是統計檢定 ——
+      2026 年度健檢連跑兩次就親眼看到「綜合」的勝負直接翻盤(A 贏 0.01 → B 贏 0.00)。
+      提高到 1000 次只是讓中位數更穩,<strong>並沒有回答「這個差異是真的嗎」</strong>。
+      <br><br>
+      真正能回答的做法是<strong>配對檢定</strong>:每一次 bootstrap 對 A 和 B 抽<strong>同一組區塊</strong>,
+      算出 A−B 的分佈,再看「A 贏的機率」。共同的市場衝擊會被抵銷,差異的估計會準得多。
+      這個還沒做 —— 要的話跟我說。
+    </p>
     <p class="hint" style="margin-top:12px">
       <strong>A</strong> = 只用 ATR 停損 + 移動停利 —— <strong>這就是你每天在「今日」看到的賣出建議</strong>(16 年回測驗證過的那套)。
       <strong>B</strong> = 再加上「板塊退燒 + 跌破MA20」,目前<strong>日常引擎沒有啟用</strong>。兩者參數完全相同,唯一差別就是這兩條出場規則。
@@ -985,14 +1035,14 @@ async function runAllPresetsMCInner() {
     render(); await sleep(30);
     const btA = runRealBacktest({ barsBySymbol, params: P.params, market: P.market, useSignalExits: false });
     if (!btA) throw new Error(`${P.label} 的 A 組回測沒有結果(歷史資料可能太短)`);
-    const mcA = monteCarlo(btA.dailyReturns, 300, 20);
+    const mcA = monteCarlo(btA.dailyReturns, MC_RUNS, MC_BLOCK);
     await sleep(0);
 
     mcProgress = `${P.label} … B:加板塊退燒/跌破MA20 (${results.length + 1}/6)`;
     render(); await sleep(30);
     const btB = runRealBacktest({ barsBySymbol, params: P.params, market: P.market, useSignalExits: true });
     if (!btB) throw new Error(`${P.label} 的 B 組回測沒有結果(歷史資料可能太短)`);
-    const mcB = monteCarlo(btB.dailyReturns, 300, 20);
+    const mcB = monteCarlo(btB.dailyReturns, MC_RUNS, MC_BLOCK);
     await sleep(0);
 
     mcCoverage = { used: btA.universeUsed, total: btA.universeTotal, from: btA.from, to: btA.to };
@@ -1009,7 +1059,7 @@ async function runAllPresetsMCInner() {
 }
 
 // block bootstrap:把日報酬打散成長度相同的區塊重組,跑 runs 次,回各指標分佈
-function monteCarlo(rets, runs = 300, blockSize = 20) {
+function monteCarlo(rets, runs = MC_RUNS, blockSize = MC_BLOCK) {
   const n = rets.length;
   if (n < blockSize * 3) return { calmar: { median: 0, p5: 0 }, cagr: { median: 0, p5: 0 }, maxdd: { median: 0, worst: 0 }, sharpe: { median: 0 } };
   const nBlocks = Math.ceil(n / blockSize);

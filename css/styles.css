@@ -242,6 +242,9 @@ body {
 .mc-table tbody tr:last-child td { border-bottom: none; }
 .mc-table .mc-win { background: rgba(245,183,49,0.08); }
 .mc-table .mc-win td { color: var(--text); font-weight: 600; }
+/* bootstrap 分佈的下緣(p5):放在中位數底下的小字,一眼看出這個估計有多不穩 */
+.mc-table .mc-p5 { font-size: 10px; color: var(--muted); font-weight: 400; }
+.mc-table .muted, .muted { color: var(--muted); }
 
 /* ---- 候選驗證器 ---- */
 .quick-fill { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
