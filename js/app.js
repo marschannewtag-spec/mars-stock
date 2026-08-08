@@ -452,9 +452,9 @@ function mcSection() {
   }
   if (mcError) return `<p class="empty">${mcError}</p><button class="btn buy wide" id="run-mc">▶ 重試</button>`;
   if (!mcResults) {
-    return `<p class="empty">六姿態 × A/B 各跑一次 + Monte Carlo(12 次回測 × ${MC_RUNS} 次 bootstrap,
-      <strong>約 5~8 分鐘</strong>,中途畫面會卡住屬正常 —— 這是同步運算,不是當掉)。</p>
-      <button class="btn buy wide" id="run-mc">▶ 跑 A/B 測試(六姿態 × ${MC_RUNS} 次 MC)</button>`;
+    return `<p class="empty">六姿態 × A/B 各跑一次 + 配對 bootstrap(12 次 16 年回測 + 6 組 × ${MC_RUNS} 次抽樣,
+      <strong>約 30 秒</strong> —— 實測值,不是估的。中途畫面會卡住屬正常,那是同步運算,不是當掉)。</p>
+      <button class="btn buy wide" id="run-mc">▶ 跑 A/B 測試(六姿態 × ${MC_RUNS} 次配對抽樣)</button>`;
   }
   // 判定完全交給配對檢定:95% 區間有沒有跨過 0。
   // 跨過 0 = 這個差異可能只是抽樣造成的,不能宣稱誰比較好。
