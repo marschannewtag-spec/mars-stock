@@ -1,5 +1,5 @@
 // sw.js — Service Worker:快取 App 殼層,讓 PWA 可離線開啟、可安裝。
-const CACHE = 'signaldesk-v31';
+const CACHE = 'signaldesk-v32';
 const SHELL = [
   './', './index.html',
   './css/styles.css',
