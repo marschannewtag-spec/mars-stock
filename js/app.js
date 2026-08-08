@@ -5,7 +5,7 @@
 // =============================================================
 
 import { MockDataAdapter, SECTORS, UNIVERSE } from './data.js';
-import { RealDataAdapter, addExtraSymbol, removeExtraSymbol, getExtras } from './data-real.js';
+import { RealDataAdapter, addExtraSymbol, removeExtraSymbol, getExtras, RETRY_MAX } from './data-real.js';
 import { config } from './config.js';
 import { rankSectors } from './sectors.js';
 import { generateBuys, generateSells, buyDiagnostic, computeStops, verifyTrendTemplate, MAX_POSITIONS } from './strategy.js';
@@ -1272,10 +1272,15 @@ async function loadData() {
     state.loading = true; state.loadMsg = '準備讀取…'; render();
 
     if (adapter.ensureLoaded) {
-      await adapter.ensureLoaded((done, total, phase) => {
-        state.loadMsg = phase === 'waiting'
-          ? `已讀取 ${done}/${total} 檔 · 等待額度重置(免費層每分鐘 8 檔)…`
-          : `讀取真實股價 ${done}/${total} 檔…`;
+      await adapter.ensureLoaded((done, total, phase, attempt) => {
+        // ratelimit 跟 waiting 都是「在等」,但成因不同,要分開講:
+        // waiting = 照計畫節流(正常);ratelimit = 真的被擋了(異常但會自己好)。
+        state.loadMsg =
+          phase === 'ratelimit'
+            ? `已讀取 ${done}/${total} 檔 · 額度用完,60 秒後重試(第 ${attempt}/${RETRY_MAX} 次)…`
+            : phase === 'waiting'
+              ? `已讀取 ${done}/${total} 檔 · 等待額度重置(免費層每分鐘 8 檔)…`
+              : `讀取真實股價 ${done}/${total} 檔…`;
         renderLoading();
       });
     }

@@ -41,6 +41,36 @@ export function removeExtraSymbol(symbol) {
 }
 const allSymbols = () => [...new Set([...BASE_SYMBOLS, ...getExtras().map((x) => x.symbol)])];
 
+// ---- 額度用完(429)自動退避重試 ----
+// Twelve Data 免費層是「每分鐘 8 credits」,超過就回 code 429,Worker 包成 502 轉回來。
+// 這是**等一分鐘就會自己好**的錯誤 —— 讓它中斷整趟 13 分鐘的載入不合理。
+// 只重試 429:key 無效、參數錯之類的錯誤重試幾次結果都一樣,
+// 立刻失敗才看得到真正的原因(拖 3 分鐘只會讓人以為是網路慢)。
+export const RETRY_MAX = 3;          // 最多重試 3 次
+const RETRY_WAIT_MS = 60000;         // 額度以「分鐘」為單位重置
+
+async function fetchJSON(url, onRateLimit) {
+  for (let retry = 0; ; retry++) {
+    const resp = await fetch(url);
+    let data;
+    try {
+      data = await resp.json();
+    } catch (e) {
+      // 回應不是 JSON(Worker 掛了 / Cloudflare 錯誤頁)。原始訊息是
+      // 「Unexpected token <」,看不出發生什麼事,換成帶狀態碼的版本。
+      throw new Error(`資料讀取失敗:回應不是 JSON(HTTP ${resp.status})`);
+    }
+    if (!(data && data.error)) return data;
+
+    const rateLimited = resp.status === 429 || data.code === 429;
+    if (!rateLimited || retry >= RETRY_MAX) {
+      throw new Error(`資料讀取失敗:${data.message || data.error}${data.code ? ' (code ' + data.code + ')' : ''}`);
+    }
+    if (onRateLimit) onRateLimit(retry + 1);
+    await sleep(RETRY_WAIT_MS);
+  }
+}
+
 export class RealDataAdapter {
   constructor(config) {
     this.cfg = config;
@@ -90,11 +120,10 @@ export class RealDataAdapter {
       const u = `${WORKER_URL.replace(/\/$/, '')}/timeseries`
         + `?symbols=${encodeURIComponent(batch.join(','))}&outputsize=${OUTPUT_SIZE}`;
 
-      const resp = await fetch(u);
-      const data = await resp.json();
-      if (data.error) {
-        throw new Error(`資料讀取失敗:${data.message || data.error}${data.code ? ' (code ' + data.code + ')' : ''}`);
-      }
+      // 遇到 429 會在這裡面等 60 秒重試,最多 3 次;其他錯誤直接往外拋。
+      const data = await fetchJSON(u, (attempt) => {
+        if (onProgress) onProgress(done, symbols.length, 'ratelimit', attempt);
+      });
 
       for (const sym of batch) {
         const values = (data[sym] && data[sym].values) || [];
