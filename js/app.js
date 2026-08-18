@@ -397,9 +397,12 @@ function rotationInfo() {
 }
 
 const WATER_LABEL = { ON: '進場許可', DEF: '防禦', NA: '—' };
-function envStamp(env) {
+// label = 「進場」/「出場」。出場戳記 portfolio.js 一直有存,但以前沒印出來 ——
+// 「買在進場許可、賣在防禦」這種環境轉變,資料庫裡有,螢幕上看不到。
+// env 為 null 時回空字串:舊紀錄沒有 exitEnv,不該硬擠一行空的出來。
+function envStamp(env, label) {
   if (!env) return '';
-  const parts = [`環境:${WATER_LABEL[env.water] || '—'}`];
+  const parts = [`${label}環境:${WATER_LABEL[env.water] || '—'}`];
   if (env.topName) parts.push(`龍頭 ${env.topName}`);
   if (env.rot) parts.push(`輪動 ${env.rot.distinct}/${env.rot.window}`);
   return `<span class="trade-env">${parts.join('　·　')}</span>`;
@@ -413,7 +416,8 @@ function tradeRow(c) {
         <span class="ticker mono">${c.symbol}</span>
         <span class="trade-sub mono">$${c.entryPrice.toFixed(2)} → $${c.exitPrice.toFixed(2)}</span>
         <span class="trade-meta">${c.partial ? `減碼 ${Math.round((c.fraction ?? 1) * 100)}% · ` : ''}${c.reason || ''} · 持有 ${c.holdingDays ?? '?'} 天 · ${c.exitDate}</span>
-        ${envStamp(c.entryEnv)}
+        ${envStamp(c.entryEnv, '進場')}
+        ${envStamp(c.exitEnv, '出場')}
       </div>
       <div class="trade-pnl mono ${cls(c.pnlPct)}">${pct(c.pnlPct)}</div>
     </div>`;
