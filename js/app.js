@@ -415,7 +415,7 @@ function tradeRow(c) {
       <div class="trade-main">
         <span class="ticker mono">${c.symbol}</span>
         <span class="trade-sub mono">$${c.entryPrice.toFixed(2)} → $${c.exitPrice.toFixed(2)}</span>
-        <span class="trade-meta">${c.partial ? `減碼 ${Math.round((c.fraction ?? 1) * 100)}% · ` : ''}${c.reason || ''} · 持有 ${c.holdingDays ?? '?'} 天 · ${c.exitDate}</span>
+        <span class="trade-meta">${c.manual ? '手動 · ' : ''}${c.partial ? `減碼 ${Math.round((c.fraction ?? 1) * 100)}% · ` : ''}${c.reason || ''} · 持有 ${c.holdingDays ?? '?'} 天 · ${c.exitDate}</span>
         ${envStamp(c.entryEnv, '進場')}
         ${envStamp(c.exitEnv, '出場')}
       </div>

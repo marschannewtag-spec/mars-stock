@@ -72,6 +72,10 @@ export class Portfolio {
       symbol, name: pos.name, entryPrice: pos.entryPrice, exitPrice: price, pnlPct,
       fraction: sellSize, partial,
       entryEnv: pos.entryEnv ?? null, exitEnv,         // 市場環境戳記(進場/出場)
+      // manual 一定要跟著平倉紀錄走。以前只存在持倉上,部位一平就消失,
+      // 事後就再也分不出「系統訊號買的」還是「自己覆蓋買的」——
+      // 而那正是紀律稽核唯一需要的欄位。
+      manual: pos.manual ?? false,
       entryDate: pos.entryDate, exitDate, holdingDays, reason,
     });
 

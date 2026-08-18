@@ -97,7 +97,7 @@ export function runRealBacktest({ barsBySymbol, params, market, rebalanceEvery =
       cash += p.shares * openP;
       trades.push({
         symbol: p.symbol, pnlPct: (openP - p.entryPrice) / p.entryPrice,
-        reason: ex.reason, exitDate: date,
+        reason: ex.reason, exitDate: date, fraction: p.size ?? 1,
       });
       positions.splice(pi, 1);
     }
@@ -118,13 +118,16 @@ export function runRealBacktest({ barsBySymbol, params, market, rebalanceEvery =
       cash -= alloc;
       positions.push({
         symbol: b.symbol, etf: UNI[b.symbol].etf, shares: alloc / openP,
+        // 分批停利要用的三個欄位:原始股數(算減碼比例的基準)、剩餘比例、已觸發的階。
+        // 跟實盤 portfolio.js 的 size / laddersFired 同語意。
+        shares0: alloc / openP, size: 1, laddersFired: [],
         entryPrice: openP, peakPrice: openP, atr: a,
         stopPrice: a ? openP - a * params.atrStopMult : openP * (1 + params.stopLossPct),
       });
     }
     pendingBuys = [];
 
-    // 2) 盤中出場(用當日 OHLC)
+    // 2) 盤中出場(用當日 OHLC)。全出場優先於階梯,順序與實盤 strategy.js 一致。
     for (let pi = positions.length - 1; pi >= 0; pi--) {
       const p = positions[pi];
       const j = idx[p.symbol][date];
@@ -135,12 +138,40 @@ export function runRealBacktest({ barsBySymbol, params, market, rebalanceEvery =
       const effStop = Math.max(hardStop, trailStop);
       if (bar.l <= effStop) {
         const exitP = Math.min(bar.o, effStop);   // 跳空開低就以開盤出
-        cash += p.shares * exitP;
+        cash += p.shares * exitP;                 // p.shares 已扣掉減碼過的部分
         trades.push({
           symbol: p.symbol, pnlPct: (exitP - p.entryPrice) / p.entryPrice,
           reason: hardStop >= trailStop ? '停損' : '移動停利', exitDate: date,
+          fraction: p.size ?? 1,
         });
         positions.splice(pi, 1);
+        continue;
+      }
+
+      // 2b) 分批停利階梯(部分出場)。
+      // 實盤是每天收盤跑一次 app.js:用收盤價判斷、用收盤價成交。這裡照抄,
+      // 才不會在回測裡拿到實盤做不到的成交價(用當日 high 成交就是變相偷跑)。
+      if (params.enableProfitLadder && Array.isArray(params.profitLadder)) {
+        const pnl = (bar.c - p.entryPrice) / p.entryPrice;
+        const fired = new Set(p.laddersFired);
+        let hit = -1;
+        for (let k = 0; k < params.profitLadder.length; k++) {
+          if (!fired.has(k) && pnl >= params.profitLadder[k].gainPct) { hit = k; break; }
+        }
+        if (hit >= 0) {
+          const frac = Math.min(params.profitLadder[hit].sellFraction, p.size);
+          const sellShares = p.shares0 * frac;
+          cash += sellShares * bar.c;
+          p.shares -= sellShares;
+          p.size -= frac;
+          p.laddersFired.push(hit);
+          trades.push({
+            symbol: p.symbol, pnlPct: pnl, exitDate: date, fraction: frac,
+            reason: `階梯停利 +${(params.profitLadder[hit].gainPct * 100).toFixed(0)}%`,
+          });
+          // 階梯把部位減到 0(理論上不會,兩階合計 0.66)-> 收掉,騰出倉位
+          if (p.size <= 1e-6) positions.splice(pi, 1);
+        }
       }
     }
 
@@ -191,7 +222,7 @@ export function runRealBacktest({ barsBySymbol, params, market, rebalanceEvery =
     const j = idx[p.symbol][last];
     if (j == null) continue;
     const c = barsBySymbol[p.symbol][j].c;
-    trades.push({ symbol: p.symbol, pnlPct: (c - p.entryPrice) / p.entryPrice, reason: '期末平倉', exitDate: last });
+    trades.push({ symbol: p.symbol, pnlPct: (c - p.entryPrice) / p.entryPrice, reason: '期末平倉', exitDate: last, fraction: p.size ?? 1 });
   }
 
   const dailyReturns = [];
