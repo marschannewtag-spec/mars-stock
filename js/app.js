@@ -465,8 +465,10 @@ function renderBacktest() {
     <h2 class="block-head">六姿態比較 <span class="head-note">Monte Carlo ${MC_RUNS} 次 · Calmar 排名</span></h2>
     <div class="warn-box">六個 preset 各跑<strong>兩次</strong> 16 年真實回測(A:只用 ATR/移動停利 vs B:再加板塊退燒/跌破MA20),各做 ${MC_RUNS} 次 block bootstrap。
       這是要回答:<strong>「板塊退燒」這條規則到底在幫你還是害你?</strong>
-      <br>⚠️ 上一輪跑出來 6 個姿態有 5 個 A&gt;B(B 交易次數暴增造成 whipsaw),所以<strong>日常引擎已經把這兩條規則關掉了</strong>
-      (見 <code>strategy.js</code> 的 <code>useSignalExits</code>)。這裡重跑是為了在資料變長之後複驗結論。
+      <br>⚠️ 最近一次(2026-08-19,含階梯停利的引擎):<strong>1/6 有統計證據且方向是 A,5/6 分不出,0/6 是 B 較優</strong>,
+      所以<strong>日常引擎把這兩條規則關掉了</strong>(見 <code>strategy.js</code> 的 <code>useSignalExits</code>)。
+      <br>撐住這個決定的是<strong>交易次數</strong>,不是績效 —— B 一律多做 16%~96% 的交易,而回測沒扣手續費與滑價。
+      「幾比幾」本身是雜訊產物:同一條規則在四次分析裡被記成 5/6 → 4/6 → 3/6 → 6/6 分不出 → 1/6,別拿它當結論。
       <br>看<strong>相對比較</strong>就好,絕對數字仍被生存者偏差灌水。</div>
     ${mcSection()}`;
 }
@@ -478,8 +480,12 @@ function mcSection() {
   }
   if (mcError) return `<p class="empty">${mcError}</p><button class="btn buy wide" id="run-mc">▶ 重試</button>`;
   if (!mcResults) {
-    return `<p class="empty">六姿態 × A/B 各跑一次 + 配對 bootstrap(12 次 16 年回測 + 6 組 × ${MC_RUNS} 次抽樣,
-      <strong>約 30 秒</strong> —— 實測值,不是估的。中途畫面會卡住屬正常,那是同步運算,不是當掉)。</p>
+    // 時間務必寫實測值:寫「約 30 秒」而實際跑 12 分鐘,使用者會以為當掉然後關掉分頁,
+    // 等於這個功能形同不存在。舊的 30 秒是「沒有階梯停利」那版引擎量的,已不適用。
+    return `<p class="empty">六姿態 × A/B 各跑一次 + 配對 bootstrap(12 次 16 年回測 + 6 組 × ${MC_RUNS} 次抽樣)。
+      <br><strong>要跑 12 分鐘以上</strong> —— 2026-08-19 實測 12 分 22 秒,不是估的。
+      <br>整段期間<strong>畫面會完全凍住、按鈕沒反應</strong>,這是同步運算,<strong>不是當掉,請不要關掉分頁</strong>。
+      跑完表格才會出現。建議插著電、別切到背景。</p>
       <button class="btn buy wide" id="run-mc">▶ 跑 A/B 測試(六姿態 × ${MC_RUNS} 次配對抽樣)</button>`;
   }
   // 判定完全交給配對檢定:95% 區間有沒有跨過 0。
