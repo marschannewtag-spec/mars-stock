@@ -110,7 +110,12 @@ const money = (x) => `$${x.toFixed(2)}`;
 function renderToday() {
   const s = portfolio.stats();
   const slots = DAILY_MAX - portfolio.positions.length;
-  const blocked = state.market && state.market.available && !state.market.riskOn;
+  // fail-closed:水位算不出來(缺 SPY 日線 / 歷史不足)一律當防禦。
+  // 舊寫法是 `available && !riskOn` —— available=false 時 blocked 反而變 false,
+  // 於是載入沒跑完的日子(SPY 排在 112 檔的最後一批)整個市場總開關靜默失效,
+  // marketBanner() 又一起消失,畫面上完全看不出來。正好是最需要被擋的時候。
+  const gateOk = !!(state.market && state.market.available);
+  const blocked = !gateOk || !state.market.riskOn;
 
   return `
     <section class="summary">
@@ -128,13 +133,15 @@ function renderToday() {
 
     <h2 class="block-head"><span class="dot buy"></span>今日精選買進
       <span class="head-note">${
-        blocked ? '市場防禦中' : (slots <= 0 ? '已滿倉' : `精選 ${state.buys.length} 檔 · 空位 ${slots}`)
+        blocked ? (gateOk ? '市場防禦中' : '水位不可用') : (slots <= 0 ? '已滿倉' : `精選 ${state.buys.length} 檔 · 空位 ${slots}`)
       }</span></h2>
     ${blocked
       ? (state.buys.length
-        ? `<p class="empty">市場水位偏高，以下標的雖通過選股門檻，<strong>今日暫停進場</strong>（觀察名單）：</p>
+        ? `<p class="empty">${gateOk
+             ? '市場水位偏高，以下標的雖通過選股門檻，<strong>今日暫停進場</strong>（觀察名單）：'
+             : '水位算不出來（今日資料不齊），保守起見<strong>暫停進場</strong>。以下僅為觀察名單：'}</p>
            ${state.buys.map((b) => buyCard(b, true)).join('')}`
-        : `<p class="empty">市場防禦中，且今天也沒有通過門檻的標的。<strong>空手。</strong></p>`)
+        : `<p class="empty">${gateOk ? '市場防禦中' : '水位不可用'}，且今天也沒有通過門檻的標的。<strong>空手。</strong></p>`)
       : `${state.buys.map((b) => buyCard(b, false)).join('')}${buyFooter(slots)}`
     }
 
@@ -148,7 +155,22 @@ function renderToday() {
 // AI 水位橫幅
 function marketBanner() {
   const m = state.market;
-  if (!m || !m.available) return '';
+  // 算不出來也必須出聲。這裡以前 return '' —— 面板整個消失,等於把
+  // 「總開關失效」藏起來,而那正是最需要被看到的時刻。
+  if (!m || !m.available) {
+    return `
+    <section class="market riskoff">
+      <div class="market-head">
+        <span class="market-title">◈ AI 水位</span>
+        <span class="market-status">不可用 · 暫停進場</span>
+      </div>
+      <div class="market-legs">
+        <span class="leg bad">缺 SPY 日線或歷史不足</span>
+        <span class="leg bad">算不出水位 → 一律當防禦</span>
+      </div>
+      <div class="market-reasons"><span class="tag warn">按右上「↻ 更新」把 112 檔抓齊(SPY 排在最後一批)</span></div>
+    </section>`;
+  }
   const statusCls = m.riskOn ? 'riskon' : 'riskoff';
   const label = m.riskOn ? '進場許可' : '防禦 · 暫停進場';
   const volLabel = m.volSource === 'VIX'
