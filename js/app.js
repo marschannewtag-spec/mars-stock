@@ -467,7 +467,10 @@ function renderBacktest() {
       這是要回答:<strong>「板塊退燒」這條規則到底在幫你還是害你?</strong>
       <br>⚠️ 最近一次(2026-08-19,含階梯停利的引擎):<strong>1/6 有統計證據且方向是 A,5/6 分不出,0/6 是 B 較優</strong>,
       所以<strong>日常引擎把這兩條規則關掉了</strong>(見 <code>strategy.js</code> 的 <code>useSignalExits</code>)。
-      <br>撐住這個決定的是<strong>交易次數</strong>,不是績效 —— B 一律多做 16%~96% 的交易,而回測沒扣手續費與滑價。
+      <br><strong class="down">那一輪是「完全沒扣交易成本」的引擎跑的 —— 現在引擎會扣手續費了,所以那組數字作廢,要重跑。</strong>
+      撐住這個決定的是<strong>交易次數</strong>,不是績效:B 一律多做 16%~96% 的交易,而多做的交易現在真的要付手續費,
+      所以 B 承受的成本拖累一定比 A 大。但<strong>這不等於 B 的淨績效一定輸</strong> —— B 的出場規則仍可能把多付的成本賺回來,
+      要跑了才知道,不能先寫結論。
       「幾比幾」本身是雜訊產物:同一條規則在四次分析裡被記成 5/6 → 4/6 → 3/6 → 6/6 分不出 → 1/6,別拿它當結論。
       <br>看<strong>相對比較</strong>就好,絕對數字仍被生存者偏差灌水。</div>
     ${mcSection()}`;
@@ -522,7 +525,8 @@ function mcSection() {
 
   const verdict = decisive.length === 0
     ? `<strong>六個姿態全部分不出高下</strong> —— 每一組的 95% 區間都跨過 0。
-       這種情況下唯一站得住的判準是交易次數:B 組一律多得多,而回測沒扣手續費與滑價。`
+       這種情況下唯一站得住的判準是交易次數:B 組一律多得多。手續費已經扣進去了,
+       但<strong>滑價還沒</strong> —— 交易越多,沒被計入的滑價就越大,所以這個判準仍然偏向 A。`
     : aWins > bWins
       ? `<strong class="down">板塊退燒/跌破MA20 偏向傷害績效</strong> —— 有統計證據的 ${decisive.length} 個裡,${aWins} 個是 A 較優${noSignal ? `;另有 ${noSignal} 個分不出` : ''}。`
       : bWins > aWins
@@ -537,7 +541,7 @@ function mcSection() {
          —— ${勝方(cp)} 確實比較好,A 贏的機率 ${pctStr(cp.pAwins)}。</strong>`
       : `<strong>A 贏的機率 ${pctStr(cp.pAwins)},95% 區間 [${cp.lo.toFixed(2)}, ${cp.hi.toFixed(2)}] 跨過 0
          —— 統計上分不出高下。</strong> 這種情況下唯一站得住的判準是交易次數,
-         而回測沒扣手續費與滑價 —— 打平的績效配上多 ${Math.round((comp.b.single.trades / comp.a.single.trades - 1) * 100)}% 的交易,只有壞處。`}`;
+         而<strong>滑價還沒扣</strong> —— 打平的淨績效配上多 ${Math.round((comp.b.single.trades / comp.a.single.trades - 1) * 100)}% 的交易,只有壞處。`}`;
 
   const cov = !mcCoverage ? ''
     : mcCoverage.used < mcCoverage.total
@@ -569,7 +573,7 @@ function mcSection() {
       2026 年度健檢就是那樣跑的,連跑兩次「綜合」的勝負直接翻盤
       (A 贏 0.01 → B 贏 0.00)—— <strong>那個 0.01 從來就不是訊號</strong>。
       <br><br>
-      ⚠️ 但要記得界線:這裡的絕對數字仍然沒扣交易成本,股票池也有生存者偏差。
+      ⚠️ 但要記得界線:這裡的絕對數字<strong>已扣手續費、但沒扣滑價</strong>,股票池也有生存者偏差。
       <strong>配對檢定讓「A 和 B 誰比較好」變得可信,沒有讓「這套策略會賺多少」變得可信。</strong>
     </div>
     <p class="hint" style="margin-top:12px">
@@ -631,6 +635,15 @@ function backtestMetrics(res) {
       回測期間 ${res.from} ~ ${res.to} · <strong class="${partial ? 'down' : ''}">參與股票 ${used}/${total} 檔</strong>${
         partial ? ' —— 長歷史沒抓齊,以下數字只代表這 ' + used + ' 檔的表現' : ''
       }</p>` : ''}
+    ${!res.cost ? '' : `<p class="hint" style="margin:0 0 8px">
+      <strong>成本假設</strong>:手續費 <strong>${(res.cost.feePct * 100).toFixed(2)}%</strong>(買賣各收一次)
+      · SEC 規費 ${(res.cost.secFeePct * 100).toFixed(5)}%(只有賣出)
+      · 滑價 <strong class="${res.cost.slipPct ? '' : 'down'}">${(res.cost.slipPct * 100).toFixed(2)}%</strong>${
+        res.cost.slipPct ? '' : ' —— <strong>滑價是 0,所以這不是「實際可交易績效」,是基準情境</strong>'}
+      <br>手續費率是<strong>回測假設</strong>(富邦網路下單公告價、免收最低手續費),不是你帳戶的實際費率;
+      SEC 規費用現行費率回溯套用全期(歷年其實調整過)。此外<strong>整股限制與股息預扣都沒模擬</strong>。
+      <br>下方<strong>勝率是扣成本後的淨值</strong>,與「績效」分頁的毛值勝率不能直接比。
+    </p>`}
     ${equitySVG(res.equity)}
     <div class="bt-grid">
       ${g('總報酬', pct(m.totalReturn), cls(m.totalReturn))}

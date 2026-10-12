@@ -143,6 +143,29 @@ const cases = [
     },
     restore: restoreGit('js/config.js'),
   },
+  {
+    // 模擬「傳進去的成本參數被靜靜忽略」—— 這是這個專案真的踩過的坑:
+    // useSignalExits 放錯層級,於是 12 次 A/B 其實是 12 次相同設定,一路綠燈。
+    // 這裡把合併掉,呼叫端給什麼費率都沒用,引擎永遠跑 COST_DEFAULT。
+    // 應該由「零成本基準」那條斷言抓到(零成本情境會變成 0.25% 的結果)。
+    name: '成本參數被忽略',
+    expect: '交易成本會計',
+    break: () => patch('js/backtest-real.js',
+      'const C = { ...COST_DEFAULT, ...(cost || {}) };',
+      'const C = { ...COST_DEFAULT };'),
+    restore: restoreGit('js/backtest-real.js'),
+  },
+  {
+    // 模擬「買進少扣了手續費」—— 現金真的少付了,但台帳仍記了那筆費用。
+    // 績效會看起來比實際好,而且不會有任何錯誤訊息。
+    // 應該由「現金恆等式」那條斷言抓到(NAV 與台帳推算對不上)。
+    name: '買進漏扣手續費',
+    expect: '交易成本會計',
+    break: () => patch('js/backtest-real.js',
+      'const costBasis = openP * buyMult;',
+      'const costBasis = openP;'),
+    restore: restoreGit('js/backtest-real.js'),
+  },
 ];
 
 // =============================================================

@@ -327,6 +327,165 @@ function checkNoSecrets() {
 }
 
 // =============================================================
+// 9. 交易成本會計(行為測試)
+// -------------------------------------------------------------
+// 治的病有兩個,而且都是「不會報錯、只會靜靜給你一組漂亮數字」那一類:
+//
+//   (1) 成本參數根本沒接上。我自己剛踩過:把 useSignalExits 塞進 params,
+//       但引擎是從最外層讀的,於是我「跑了 12 次 A/B」其實是 12 次相同設定,
+//       而且畫面一路綠燈。費率接錯會長得一模一樣。
+//   (2) 加成本時不小心改到了策略行為。這會讓「績效變差」同時混進
+//       「成本」和「規則被動到」兩個原因,事後分不開。
+//
+// 所以核心是**零成本回歸**:費率全 0 時,結果必須與加成本之前的引擎
+// 位元級相同。下面的 GOLDEN 就是那條線 —— 它是用改動前的引擎跑出來、
+// 再用改動後的引擎確認完全重現的值。
+//
+// ⚠️ GOLDEN 壞掉時不要直接改數字。它的意思是「引擎的行為變了」:
+//    如果你是**刻意**改了選股/出場邏輯,那請先過不變量 6 的六姿態 A/B 閘門,
+//    確認過再更新這個常數。如果你不是刻意的,那你剛剛踩到了一個 bug。
+//
+// 這裡刻意**不用 PRESETS** —— 用寫死在本檔的測試參數,調 preset 不會誤殺,
+// 動引擎才會。假警報一多,哨兵就等於死了。
+// =============================================================
+const COST_TEST_PARAMS = {
+  maxPositions: 6, hotSectorCount: 3, sectorExitRank: 5,
+  minStockScore: 0.13,
+  requireAboveMA20: true, requireAboveMA50: true,
+  requireBothMomentumPositive: true, requireSectorScorePositive: true,
+  reentryCooldownDays: 5,
+  atrStopMult: 2.5, stopLossPct: -0.18, trailingStopPct: -0.12,
+  momentumBreakBuffer: -0.03,
+  enableProfitLadder: true,
+  profitLadder: [{ gainPct: 0.30, sellFraction: 0.33 }, { gainPct: 0.60, sellFraction: 0.33 }],
+};
+const COST_TEST_MARKET = {
+  smaWindow: 252, vixThreshold: 22, realizedVolWindow: 20,
+  realizedVolThreshold: 0.22, blockOnDefensiveLegs: 1,
+};
+// 這個值是用**改動前**的引擎(git show <加成本的 commit>~1:js/backtest-real.js)
+// 跑上面那組測試參數得到的,不是從改動後的引擎抄的 —— 否則測試只是在證明
+// 「新引擎等於它自己」,完全沒有回歸的效果。
+const COST_GOLDEN_NAV = 166.6551440634215;    // 零成本、改動前引擎的期末 NAV
+
+// 決定性的合成 OHLC。要同時滿足:市場水位 riskOn、板塊分得出高下、
+// 會進場、會觸發階梯停利、會觸發停損/移動停利、期末還有部位要平 ——
+// 五條成本路徑全部走到,否則「加了成本」可能只是某一條路徑有扣。
+function costTestBars(n = 320) {
+  const d0 = Date.UTC(2020, 0, 1);
+  const dates = [];
+  for (let i = 0; i < n; i++) dates.push(new Date(d0 + i * 86400000).toISOString().slice(0, 10));
+  const wig = (i, k) => 1 + 0.004 * Math.sin((i + k * 7) * 0.9);   // 讓 high/low 有寬度,ATR 才非 0
+  const make = (drift, crashAt, crashDepth, seed) => {
+    const bars = [];
+    let p = 50 + seed;
+    for (let i = 0; i < n; i++) {
+      p *= (1 + drift);
+      if (crashAt && i >= crashAt && i < crashAt + 6) p *= (1 - crashDepth);
+      const c = p * wig(i, seed), o = p * wig(i - 1, seed);
+      bars.push({ d: dates[i], o, h: Math.max(o, c) * 1.006, l: Math.min(o, c) * 0.994, c });
+    }
+    return bars;
+  };
+  const bars = { SPY: make(0.0008, 0, 0, 1) };                     // 緩升低波動 -> riskOn
+  ['AAPL', 'MSFT', 'NVDA', 'AVGO'].forEach((s, k) => { bars[s] = make(0.005, 250, 0.05, 2 + k); });
+  ['LLY', 'UNH', 'JNJ', 'MRK'].forEach((s, k) => { bars[s] = make(0.0045, 265, 0.05, 6 + k); });
+  ['XOM', 'CVX', 'COP', 'SLB'].forEach((s, k) => { bars[s] = make(-0.0012, 0, 0, 10 + k); });
+  ['PG', 'KO', 'PEP', 'WMT'].forEach((s, k) => { bars[s] = make(-0.0008, 0, 0, 14 + k); });
+  return bars;
+}
+
+async function checkTradingCosts() {
+  const { runRealBacktest, COST_DEFAULT } =
+    await import(pathToFileURL(rel('js', 'backtest-real.js')).href);
+
+  const barsBySymbol = costTestBars();
+  const run = (cost) => runRealBacktest({
+    barsBySymbol, params: COST_TEST_PARAMS, market: COST_TEST_MARKET, cost,
+  });
+  const navOf = (r) => r.equity[r.equity.length - 1].nav;
+  const FREE = { feePct: 0, secFeePct: 0, slipPct: 0 };
+  const problems = [];
+
+  const zero = run(FREE);
+  if (!zero || !zero.trades.length) {
+    fail('交易成本會計', '合成資料沒有產生任何交易 —— 測試是空殼,先修測試資料');
+    return;
+  }
+
+  // (a) 五條成本路徑都要真的被走到,否則下面的斷言只證明了其中幾條
+  const reasons = new Set(zero.trades.map((t) => t.reason));
+  const needPaths = ['停損', '移動停利', '期末平倉'];
+  const missing = needPaths.filter((r) => !reasons.has(r));
+  if (!zero.costLedger.buyNotional) missing.push('進場');
+  if (![...reasons].some((r) => r.startsWith('階梯停利'))) missing.push('階梯停利');
+  if (missing.length) problems.push(`合成資料沒有走到這些路徑:${missing.join('、')}(測試是空殼)`);
+
+  // (b) 零成本回歸:必須與加成本前的引擎位元級相同
+  if (navOf(zero) !== COST_GOLDEN_NAV) {
+    problems.push(
+      `零成本 NAV ${navOf(zero)} ≠ 基準 ${COST_GOLDEN_NAV}。\n` +
+      `      這代表引擎行為變了,不只是加了成本。刻意改規則的話請先過六姿態 A/B 再更新常數。`);
+  }
+  if (zero.costLedger.feesPaid !== 0 || zero.costLedger.slipPaid !== 0) {
+    problems.push(`零成本時台帳不是 0:fees=${zero.costLedger.feesPaid} slip=${zero.costLedger.slipPaid}`);
+  }
+
+  // (c) 成本參數真的有傳進去並生效(防「參數靜靜被忽略」)
+  const fee = run(COST_DEFAULT);
+  if (!(navOf(fee) < navOf(zero))) {
+    problems.push(`加了 ${COST_DEFAULT.feePct * 100}% 手續費,期末 NAV 沒有下降` +
+      `(${navOf(fee)} vs 零成本 ${navOf(zero)})—— 費率可能沒被讀到`);
+  }
+
+  // (d) pnlPct 是淨、grossPnlPct 是毛,而且毛值沒被成本動到
+  const notNet = fee.trades.filter((t) => !(t.pnlPct < t.grossPnlPct));
+  if (notNet.length) problems.push(`${notNet.length} 筆交易的 pnlPct 沒有低於 grossPnlPct(淨報酬沒生效)`);
+  const grossMoved = fee.trades.filter((t, i) => t.grossPnlPct !== zero.trades[i]?.pnlPct);
+  if (grossMoved.length) problems.push(`${grossMoved.length} 筆交易的毛報酬被成本動到了(毛值應與零成本相同)`);
+
+  // (e) SEC 規費只收賣出。買進若誤扣,feesPaid 會多出 sec×buyNotional。
+  const secOnly = run({ feePct: 0, secFeePct: 0.001, slipPct: 0 });
+  const L = secOnly.costLedger;
+  if (Math.abs(L.feesPaid - 0.001 * L.sellNotional) > 1e-12 * Math.max(1, L.feesPaid)) {
+    problems.push(`SEC 規費不該收買進:feesPaid=${L.feesPaid} 應為 ${0.001 * L.sellNotional}`);
+  }
+
+  // (f) 滑價是走「成交價」不是走「費用」:費用台帳必須是 0,但 NAV 要變差
+  const slipOnly = run({ feePct: 0, secFeePct: 0, slipPct: 0.001 });
+  if (slipOnly.costLedger.feesPaid !== 0) {
+    problems.push(`滑價被記成了費用:feesPaid=${slipOnly.costLedger.feesPaid},應為 0`);
+  }
+  if (!(navOf(slipOnly) < navOf(zero))) problems.push('加了滑價,期末 NAV 沒有下降');
+
+  // (g) 現金恆等式 —— 這一項才是真正獨立的驗收:期末、台帳、現金三者口徑一致。
+  //     期末全部結算後 NAV 必須等於:起始 100 − 買進總支出 + 賣出總實收。
+  //     對不上 = 某個成交點漏扣、重複扣,或期末只記了紀錄沒結算現金。
+  for (const [tag, r, c] of [['手續費', fee, COST_DEFAULT], ['滑價', slipOnly, { feePct: 0, secFeePct: 0, slipPct: 0.001 }]]) {
+    const K = r.costLedger;
+    const expectNav = 100 - K.buyNotional * (1 + c.feePct)
+      + K.sellNotional * (1 - c.feePct - c.secFeePct);
+    if (Math.abs(navOf(r) - expectNav) > 1e-9) {
+      problems.push(`${tag}情境的現金恆等式對不上:NAV ${navOf(r)} vs 台帳推算 ${expectNav}`);
+    }
+    const expectFees = c.feePct * (K.buyNotional + K.sellNotional) + c.secFeePct * K.sellNotional;
+    if (Math.abs(K.feesPaid - expectFees) > 1e-9 * Math.max(1, expectFees)) {
+      problems.push(`${tag}情境的費用台帳對不上:feesPaid ${K.feesPaid} vs 應收 ${expectFees}`);
+    }
+  }
+
+  // (h) 反向測試:荒謬費率必須吵,不能靜靜回一組數字
+  let threw = false;
+  try { run({ feePct: 2, secFeePct: 0, slipPct: 0 }); } catch { threw = true; }
+  if (!threw) problems.push('feePct=200% 沒有拋錯 —— 參數防呆失效');
+
+  if (problems.length) { fail('交易成本會計', problems.join('\n    ')); return; }
+  ok('交易成本會計',
+    `零成本位元級重現基準;${zero.trades.length} 筆交易走遍五條成本路徑;` +
+    `0.25% 手續費使期末 NAV ${navOf(zero).toFixed(2)} -> ${navOf(fee).toFixed(2)};現金恆等式相符`);
+}
+
+// =============================================================
 // 主流程
 // =============================================================
 console.log('\n  SignalDesk 架構驗證\n  ' + '─'.repeat(56));
@@ -339,6 +498,7 @@ checkSwVersionBump();
 await checkConfigKeys();
 checkNoDuplicateConfig();
 checkNoSecrets();
+await checkTradingCosts();
 
 console.log('');
 for (const r of results) {

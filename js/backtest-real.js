@@ -8,6 +8,7 @@
 //   • 市場水位:SPY 12M 均線 + 已實現波動,防禦時暫停進場
 //   • 板塊排名:用成分股平均(免抓 11 檔 ETF 歷史,省 Tiingo 額度)
 //   • 帳戶:現金會計,等權 1/maxPositions,起點 NAV=100
+//   • 交易成本:手續費 + SEC 規費 + 滑價,見下面 COST_DEFAULT
 // =============================================================
 
 import { SECTORS, UNIVERSE } from './data.js';
@@ -17,6 +18,34 @@ import { computeMarketGate } from './market.js';
 import { computeMetrics } from './backtest.js';
 
 const UNI = Object.fromEntries(UNIVERSE.map((u) => [u.symbol, u]));
+
+// =============================================================
+// 交易成本
+// -------------------------------------------------------------
+// 放在這裡而不是 presets.js:費率是**你的券商屬性**,不是姿態屬性。
+// 放進 preset 等於允許「Marcus Jin 的手續費跟 Amber 姐姐不一樣」,那是錯的模型。
+//
+// ⚠️ feePct 是**回測假設**,不是「每個富邦帳戶的官方統一費率」。
+//    富邦公開頁寫網路下單 0.25%、依成交金額計算、免收最低手續費
+//    (免低收這點是關鍵:有低收的話小額帳戶會被定額費用吃掉)。
+//    但實際費率可議價,你自己的對帳單才算數。拿這組數字講話時要說「假設」。
+//
+// ⚠️ secFeePct 用的是**現行**費率($20.60/百萬),回溯套用到 2010 年。
+//    SEC 第 31 條規費歷年調整過很多次,所以這是「現行費率回溯套用」,
+//    不是逐日還原。不修正的理由是量級:它只有手續費的約 1/120,
+//    歷年變動幅度對年化拖累的影響在 0.001%/年以下,修了也看不出差別。
+//    但要揭露,不能假裝回測精確到這一層。
+//
+// ⚠️ slipPct 預設 0 —— 這是**刻意的**。手續費是公開事實(查得到),
+//    滑價是建模假設(沒有權威數字)。混在一起,結論就無法辯護。
+//    所以第一次實驗跑零滑價當基準,之後另跑 0.001(每邊 0.1%)做敏感度。
+//    零滑價的結果**不是**「實際可交易績效」,只是基準情境。
+// =============================================================
+export const COST_DEFAULT = {
+  feePct: 0.0025,        // 券商手續費,買賣都收(富邦網路下單公告價 0.25%)
+  secFeePct: 0.0000206,  // SEC 規費,**只有賣出**收($20.60/百萬,2026-04-02 起)
+  slipPct: 0,            // 單邊滑價:買貴、賣便宜。預設 0,見上面
+};
 
 // 預算每檔的滾動指標(index 對應該檔自己的 bar)
 function precompute(bars) {
@@ -59,8 +88,45 @@ function navNow(cash, positions, barsBySymbol, idx, date) {
 }
 
 // 主函式
-export function runRealBacktest({ barsBySymbol, params, market, rebalanceEvery = 5, warmup = 63, useSignalExits = false }) {
+export function runRealBacktest({ barsBySymbol, params, market, rebalanceEvery = 5, warmup = 63, useSignalExits = false, cost = COST_DEFAULT }) {
   const maxPos = params.maxPositions ?? MAX_POSITIONS;
+
+  // ---- 交易成本:把三個費率摺成兩個「每股倍數」,所有成交點共用 ----
+  // buyMult  = 每買 1 股實際付出的錢 ÷ 報價
+  // sellMult = 每賣 1 股實際拿到的錢 ÷ 報價
+  // 摺成倍數的好處:五個成交點(進場/停損/移動停利/階梯/訊號出場/期末)
+  // 不可能各自寫錯一個版本 —— 只有一份公式。
+  const C = { ...COST_DEFAULT, ...(cost || {}) };
+  const buyMult = (1 + C.slipPct) * (1 + C.feePct);
+  const sellMult = (1 - C.slipPct) * (1 - C.feePct - C.secFeePct);
+  // 參數餵進荒謬值時要吵。靜靜回一組漂亮但無意義的數字,是這個專案最怕的那種壞。
+  if (!(buyMult > 0) || !(sellMult > 0) || !isFinite(buyMult) || !isFinite(sellMult)) {
+    throw new Error(`交易成本參數不合理:fee=${C.feePct} sec=${C.secFeePct} slip=${C.slipPct}`);
+  }
+  // 費用台帳。給驗收用:它必須對得上「費率 × 成交名目」這個算術恆等式,
+  // 對不上就是某個成交點漏扣或重複扣了 —— 這是唯一能事先算出答案的檢查。
+  let feesPaid = 0, slipPaid = 0, buyNotional = 0, sellNotional = 0;
+
+  // 賣出的共用結算:回傳實收現金,並把費用記進台帳。
+  const sellProceeds = (shares, quote) => {
+    const execP = quote * (1 - C.slipPct);          // 滑價後的實際成交價
+    const notional = shares * execP;
+    const fee = notional * (C.feePct + C.secFeePct);
+    slipPaid += shares * quote * C.slipPct;
+    feesPaid += fee;
+    sellNotional += notional;
+    return notional - fee;
+  };
+
+  // 每筆交易的淨報酬率。
+  //   每股實付 = entryPrice × buyMult(存成 costBasis),每股實收 = quote × sellMult。
+  // 注意:分子分母都隨股數等比縮放,所以**這個值與 fraction 無關** ——
+  // 階梯部分出場不需要另一套算法,比例公式本身就是精確解,不是近似。
+  // 寫成 (實收 - 實付)/實付 而不是 實收/實付 - 1:零成本時這會退化成與舊版
+  // **完全相同的浮點運算式**,回歸測試才能位元級相等。兩種寫法數學上一樣,
+  // 但 (a-b)/b 和 a/b-1 的最後一個 bit 會差 —— 差一個 ULP 就看不出「只差在成本」。
+  const netPnl = (p, quote) => (quote * sellMult - p.costBasis) / p.costBasis;
+  const grossPnl = (p, quote) => (quote - p.entryPrice) / p.entryPrice;
   const spyBars = barsBySymbol['SPY'] || [];
   const cal = spyBars.map((b) => b.d);          // 主行事曆 = SPY 交易日
   if (cal.length < warmup + 50) return null;
@@ -94,9 +160,9 @@ export function runRealBacktest({ barsBySymbol, params, market, rebalanceEvery =
       const openP = barsBySymbol[ex.symbol][j].o;
       if (!openP || openP <= 0) continue;
       const p = positions[pi];
-      cash += p.shares * openP;
+      cash += sellProceeds(p.shares, openP);
       trades.push({
-        symbol: p.symbol, pnlPct: (openP - p.entryPrice) / p.entryPrice,
+        symbol: p.symbol, pnlPct: netPnl(p, openP), grossPnlPct: grossPnl(p, openP),
         reason: ex.reason, exitDate: date, fraction: p.size ?? 1,
       });
       positions.splice(pi, 1);
@@ -115,13 +181,24 @@ export function runRealBacktest({ barsBySymbol, params, market, rebalanceEvery =
       const alloc = Math.min(nav / maxPos, cash);
       if (alloc <= 0) continue;
       const a = ind[b.symbol].atr[j];
+      // alloc 是**含手續費與滑價的總預算**,所以股數要除以「每股實付成本」。
+      // 寫成 cash -= alloc*(1+fee) 會在 alloc === cash(現金吃緊)時把現金做成負數 ——
+      // 那不會報錯,只會讓 NAV 悄悄失真,是這個專案最難察覺的一類壞。
+      const costBasis = openP * buyMult;            // 每股實付(含費與滑價)
+      const shares = alloc / costBasis;
+      buyNotional += shares * openP * (1 + C.slipPct);
+      slipPaid += shares * openP * C.slipPct;
+      feesPaid += shares * openP * (1 + C.slipPct) * C.feePct;   // 買進不收 SEC 規費
       cash -= alloc;
       positions.push({
-        symbol: b.symbol, etf: UNI[b.symbol].etf, shares: alloc / openP,
+        symbol: b.symbol, etf: UNI[b.symbol].etf, shares,
         // 分批停利要用的三個欄位:原始股數(算減碼比例的基準)、剩餘比例、已觸發的階。
         // 跟實盤 portfolio.js 的 size / laddersFired 同語意。
-        shares0: alloc / openP, size: 1, laddersFired: [],
-        entryPrice: openP, peakPrice: openP, atr: a,
+        shares0: shares, size: 1, laddersFired: [],
+        // entryPrice 維持**原始報價**,不是 costBasis ——
+        // 停損/移動停利是價格規則,摻進手續費就等於偷改了出場邏輯。
+        // costBasis 只拿來算淨報酬,絕不餵給 computeStops。
+        entryPrice: openP, costBasis, peakPrice: openP, atr: a,
         stopPrice: a ? openP - a * params.atrStopMult : openP * (1 + params.stopLossPct),
       });
     }
@@ -138,9 +215,9 @@ export function runRealBacktest({ barsBySymbol, params, market, rebalanceEvery =
       const effStop = Math.max(hardStop, trailStop);
       if (bar.l <= effStop) {
         const exitP = Math.min(bar.o, effStop);   // 跳空開低就以開盤出
-        cash += p.shares * exitP;                 // p.shares 已扣掉減碼過的部分
+        cash += sellProceeds(p.shares, exitP);    // p.shares 已扣掉減碼過的部分
         trades.push({
-          symbol: p.symbol, pnlPct: (exitP - p.entryPrice) / p.entryPrice,
+          symbol: p.symbol, pnlPct: netPnl(p, exitP), grossPnlPct: grossPnl(p, exitP),
           reason: hardStop >= trailStop ? '停損' : '移動停利', exitDate: date,
           fraction: p.size ?? 1,
         });
@@ -161,12 +238,14 @@ export function runRealBacktest({ barsBySymbol, params, market, rebalanceEvery =
         if (hit >= 0) {
           const frac = Math.min(params.profitLadder[hit].sellFraction, p.size);
           const sellShares = p.shares0 * frac;
-          cash += sellShares * bar.c;
+          cash += sellProceeds(sellShares, bar.c);
           p.shares -= sellShares;
           p.size -= frac;
           p.laddersFired.push(hit);
           trades.push({
-            symbol: p.symbol, pnlPct: pnl, exitDate: date, fraction: frac,
+            // pnl(毛)是上面觸發階梯用的判斷值;淨報酬與 frac 無關,見 netPnl 的註解。
+            symbol: p.symbol, pnlPct: netPnl(p, bar.c), grossPnlPct: pnl,
+            exitDate: date, fraction: frac,
             reason: `階梯停利 +${(params.profitLadder[hit].gainPct * 100).toFixed(0)}%`,
           });
           // 階梯把部位減到 0(理論上不會,兩階合計 0.66)-> 收掉,騰出倉位
@@ -216,14 +295,30 @@ export function runRealBacktest({ barsBySymbol, params, market, rebalanceEvery =
     }
   }
 
-  // 期末平掉
+  // 期末平掉。
+  // 以前這裡只推交易紀錄、不碰現金,最後的 NAV 用市值計價 —— 於是「交易紀錄說賣掉了」
+  // 跟「NAV 說還握著」用了兩套口徑,而且賣出成本憑空消失。現在真的結算:
+  // 賣出現金進 cash,再把 equity 最後一點改寫成結算後的值,三者口徑一致。
+  //
+  // 只動 equity 的最後一個點(它的日期本來就是平倉日),不新增資料點 ——
+  // 新增會憑空多出一個交易日,污染 dailyReturns 的長度與蒙地卡羅抽樣。
+  //
+  // 零成本時 cash 的結算值恰好等於 navNow(cash + Σ 股數×收盤),
+  // 所以 feePct=0 的回歸測試仍然位元級重現舊版。
   const last = cal[cal.length - 1];
   for (const p of positions) {
     const j = idx[p.symbol][last];
+    // 最後一天沒有 bar(下市 / 資料缺口):不能成交,就不要假裝賣掉了。
+    // navNow 對這種部位本來就當 0,這裡維持一致 —— 不結算、也不推出場紀錄。
     if (j == null) continue;
     const c = barsBySymbol[p.symbol][j].c;
-    trades.push({ symbol: p.symbol, pnlPct: (c - p.entryPrice) / p.entryPrice, reason: '期末平倉', exitDate: last, fraction: p.size ?? 1 });
+    cash += sellProceeds(p.shares, c);
+    trades.push({
+      symbol: p.symbol, pnlPct: netPnl(p, c), grossPnlPct: grossPnl(p, c),
+      reason: '期末平倉', exitDate: last, fraction: p.size ?? 1,
+    });
   }
+  if (equity.length) equity[equity.length - 1].nav = cash;
 
   const dailyReturns = [];
   for (let i = 1; i < equity.length; i++) dailyReturns.push(equity[i].nav / equity[i - 1].nav - 1);
@@ -236,6 +331,14 @@ export function runRealBacktest({ barsBySymbol, params, market, rebalanceEvery =
     universeUsed: symbols.length,
     universeTotal: UNIVERSE.length,
     from: cal[warmup], to: cal[cal.length - 1],
+    // 成本假設要跟著數字一起被看到。績效數字不附成本口徑,
+    // 跟「約 30 秒」那段假說明是同一個病。
+    cost: C,
+    // 費用台帳。驗收用的算術恆等式:
+    //   feesPaid === feePct × (buyNotional + sellNotional) + secFeePct × sellNotional
+    // 對不上 = 某個成交點漏扣或重複扣。這是唯一能事先算出答案的檢查,
+    // 比「CAGR 應該落在 14% 附近」那種估算區間硬得多。
+    costLedger: { feesPaid, slipPaid, buyNotional, sellNotional },
   };
 }
 
