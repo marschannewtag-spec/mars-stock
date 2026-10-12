@@ -396,8 +396,19 @@ function costTestBars(n = 320) {
 }
 
 async function checkTradingCosts() {
-  const { runRealBacktest, COST_DEFAULT } =
-    await import(pathToFileURL(rel('js', 'backtest-real.js')).href);
+  // 這支要 import 整條依賴鏈。鏈上任一支語法壞掉,這裡會丟出未捕捉的例外,
+  // 把整個 verify 連同**前面幾項已經驗出來的結果一起炸掉** —— 使用者只會看到
+  // 一串 node 的堆疊,看不到「語法檢查:js/sectors.js 第 46 行」。
+  // (這個洞是 selftest 抓出來的:弄壞 sectors.js 之後,第 1 項反而變成「沒抓到」。)
+  // 載不進來這件事,第 1 項與第 2 項已經會報,這裡安靜跳過就好。
+  let runRealBacktest, COST_DEFAULT;
+  try {
+    ({ runRealBacktest, COST_DEFAULT } =
+      await import(pathToFileURL(rel('js', 'backtest-real.js')).href));
+  } catch (e) {
+    skip('交易成本會計', `回測引擎載不進來,略過(真正的原因看「語法檢查」/「Import 圖完整性」)`);
+    return;
+  }
 
   const barsBySymbol = costTestBars();
   const run = (cost) => runRealBacktest({
