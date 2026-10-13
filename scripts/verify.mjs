@@ -967,6 +967,31 @@ function checkMonteCarlo() {
   }
 
 
+  // ---- (e2) signFlips 必須由**真實程式**算出 true 過一次 ----
+  // (f) 段的 fixture 是手動塞 signFlips: true 的,所以它證明不了「這個欄位
+  // 真的會被算出來」—— 把 signFlips 寫死成 false,(f) 仍然會過。
+  // 這一段補上那個洞:餵一組 A 與 B **分布相同、只有順序不同**的資料。
+  // 兩者之間沒有真實差異,所以各顆種子的 A−B 中位數會在 0 附近擺盪,
+  // 正確的輸出就是「方向不穩定」。
+  {
+    const g = M.xorshift32(31337);
+    const n = 500;
+    const A3 = [];
+    for (let i = 0; i < n; i++) A3.push((g() - 0.48) * 0.02);
+    const B3 = [...A3];
+    for (let i = B3.length - 1; i > 0; i--) { const j = Math.floor(g() * (i + 1)); [B3[i], B3[j]] = [B3[j], B3[i]]; }
+    const rf = M.pairedMonteCarlo(A3, B3, 120, 20, M.MC_SEEDS);
+    const medsF = rf.paired.seedSpread.perSeed.map((p) => p.median);
+    const reallyMixed = medsF.some((m) => m > 0) && medsF.some((m) => m < 0);
+    if (!reallyMixed) {
+      // 測試資料失效,不是程式壞了 —— 但也不能當成通過
+      problems.push('signFlips 測試資料已失效:這組資料的各種子中位數不再跨越 0' +
+        `(${medsF.map((m) => m.toFixed(3)).join(', ')})。改了 MC_SEEDS 或 MC_BLOCK 之後要重新挑一組。`);
+    } else if (rf.paired.seedSpread.signFlips !== true) {
+      problems.push('各種子的 A−B 中位數確實跨越 0,signFlips 卻不是 true —— 唯一真正重要的訊號失效了');
+    }
+  }
+
   // ---- (f) 跨種子區塊的渲染 ----
   // 這塊 UI 只在「跑完六姿態」之後才會出現,所以手動點不到、也最容易悄悄壞掉。
   // 餵 2026-10-14 的實測值進去,確認三件事:符號一致的訊息、極差最大的姿態、
@@ -1017,7 +1042,7 @@ function checkMonteCarlo() {
   if (problems.length) { fail('MC 抽樣正確性', problems.join('\n    ')); return; }
   ok('MC 抽樣正確性',
     `${M.MC_SEEDS.length} 顆非零種子可重現;最後一個合法起點(${LAST})抽得到且不越界;` +
-    `${LAST + 1} 個起點全覆蓋;A/B 共用起點(相同輸入 A-B 恆為 0);跨種子摘要正確；跨種子區塊的渲染與反向測試都過`);
+    `${LAST + 1} 個起點全覆蓋;A/B 共用起點(相同輸入 A-B 恆為 0);跨種子摘要正確；signFlips 由真實程式算出過 true；區塊渲染與反向測試都過`);
 }
 
 // =============================================================
