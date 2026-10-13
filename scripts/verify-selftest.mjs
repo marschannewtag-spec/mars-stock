@@ -187,6 +187,37 @@ const cases = [
     break: () => patch('js/portfolio.js', 'posWeight: 1 / DAILY_POS,', 'posWeight: null,'),
     restore: restoreGit('js/portfolio.js'),
   },
+  {
+    // 探索分頁的買進把市場閘門換成寫死的「永遠放行」。
+    // 這正是 2026-10-14 之前的實際狀態:市場防禦中也能從探索頁進場。
+    name: '探索買進繞過市場閘門',
+    expect: '進場限制一致性',
+    break: () => patch('js/app.js',
+      'const gate = entryGate();',
+      'const gate = { blocked: false, available: true };'),
+    restore: restoreGit('js/app.js'),
+  },
+  {
+    // 把價格帶的上限拿掉 —— 下限還在,所以「有檢查」,但高價股照樣進得來。
+    // 這種「擋一半」最難用肉眼發現。
+    name: '價格帶上限失效',
+    expect: '進場限制一致性',
+    break: () => patch('js/app.js',
+      'return Number.isFinite(price) && price >= lo && price <= hi;',
+      'return Number.isFinite(price) && price >= lo;'),
+    restore: restoreGit('js/app.js'),
+  },
+  {
+    // 市場閘門退回 fail-open:水位算不出來時 blocked 反而變 false。
+    // 這是這個專案真的踩過的坑 —— 載入沒跑完的日子總開關靜默失效,
+    // 而且 marketBanner() 會一起消失,畫面上完全看不出來。
+    name: '市場閘門 fail-open 回歸',
+    expect: '進場限制一致性',
+    break: () => patch('js/app.js',
+      'return { available, blocked: !available || !state.market.riskOn };',
+      'return { available, blocked: available && !state.market.riskOn };'),
+    restore: restoreGit('js/app.js'),
+  },
 ];
 
 // =============================================================

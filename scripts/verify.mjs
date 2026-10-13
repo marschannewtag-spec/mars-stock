@@ -601,6 +601,113 @@ async function checkRealizedWeighting() {
 }
 
 // =============================================================
+// 11. 進場限制一致性 —— 兩條進場路徑必須套用同一組閘門
+// -------------------------------------------------------------
+// 「今日」與「探索」是兩條獨立的進場路徑。2026-10-14 之前,探索分頁的買進
+// 只檢查 r.pass 就直接呼叫 portfolio.buy() —— 市場防禦中、水位算不出來、
+// 價格超出下單價格帶,全都還是能把部位塞進持倉,而且畫面上完全看不出異常。
+//
+// 這一項分三段:
+//   (a) 唯一來源:閘門的判斷式在 app.js 裡只能出現一次。兩邊各寫一份的話,
+//       其中一份遲早會跟另一份分岐,而分岐的那天不會有任何錯誤訊息。
+//   (b) 行為:把 app.js 裡那兩個函式的**真實原始碼**抽出來,在沙箱裡跑完整
+//       真值表。測的是真的程式,邏輯改了一定紅燈。
+//   (c) 接線:確認 xbuy handler 在 portfolio.buy() 之前真的走過這兩道、而且
+//       真的 return。這段是結構檢查 —— 它只能證明「有接」不能證明「接對」,
+//       重構 handler 也會誤殺。留著的理由是 (b) 證明不了「閘門被用到」,
+//       而「寫了閘門但沒接上」正是這個 bug 的原形。
+// =============================================================
+function checkEntryGate() {
+  const src = readFileSync(rel('js/app.js'), 'utf8');
+  const problems = [];
+
+  // ---- (a) 判斷式只能有一份 ----
+  const dupGate = (src.match(/state\.market\s*&&\s*state\.market\.available/g) || []).length;
+  const dupBand = (src.match(/config\.PRICE_MIN\s*\?\?/g) || []).length;
+  if (dupGate !== 1) problems.push(`市場閘門判斷式在 app.js 出現 ${dupGate} 次(應為 1 次,只在 entryGate() 裡)`);
+  if (dupBand !== 1) problems.push(`價格帶判斷式在 app.js 出現 ${dupBand} 次(應為 1 次,只在 priceInBand() 裡)`);
+
+  // ---- (b) 真值表:抽出真實函式原始碼,在沙箱裡執行 ----
+  // 從 `function NAME(` 開始數大括號,取到配對的那一個
+  const grab = (name) => {
+    const i = src.indexOf(`function ${name}(`);
+    if (i < 0) return null;
+    const open = src.indexOf('{', i);
+    let depth = 0;
+    for (let j = open; j < src.length; j++) {
+      if (src[j] === '{') depth++;
+      else if (src[j] === '}' && --depth === 0) return src.slice(i, j + 1);
+    }
+    return null;
+  };
+  const fnBand = grab('priceInBand'), fnGate = grab('entryGate'), fnPB = grab('priceBand');
+  if (!fnBand || !fnGate || !fnPB) {
+    fail('進場限制一致性', 'app.js 找不到 priceBand() / priceInBand() / entryGate() —— 進場限制的單一來源不見了');
+    return;
+  }
+  const sandbox = (cfg, st) =>
+    new Function('config', 'state', `${fnPB}\n${fnBand}\n${fnGate}\nreturn { priceInBand, entryGate };`)(cfg, st);
+
+  // 市場閘門:fail-closed —— 只有「算得出來 且 riskOn」才放行
+  const CFG = { PRICE_MIN: 6, PRICE_MAX: 666 };
+  const gateCases = [
+    ['market 整個是 null',          null,                              true,  false],
+    ['market 是 undefined',         undefined,                         true,  false],
+    ['available: false(資料不齊)', { available: false },              true,  false],
+    ['防禦中(riskOn: false)',      { available: true, riskOn: false }, true,  true],
+    ['riskOn 欄位不存在',           { available: true },               true,  true],
+    ['正常通過',                    { available: true, riskOn: true },  false, true],
+  ];
+  for (const [label, market, wantBlocked, wantAvail] of gateCases) {
+    const { entryGate } = sandbox(CFG, { market });
+    const g = entryGate();
+    if (g.blocked !== wantBlocked) problems.push(`entryGate「${label}」blocked 應為 ${wantBlocked},實際 ${g.blocked}`);
+    if (g.available !== wantAvail) problems.push(`entryGate「${label}」available 應為 ${wantAvail},實際 ${g.available}`);
+  }
+
+  // 價格帶:上下限都是閉區間,非有限數一律拒絕
+  const { priceInBand } = sandbox(CFG, { market: null });
+  const bandCases = [
+    ['低於下限 5.99', 5.99, false], ['正好是下限 6', 6, true],
+    ['帶內 100', 100, true],
+    ['正好是上限 666', 666, true], ['高於上限 666.01', 666.01, false],
+    ['NaN', NaN, false], ['undefined', undefined, false],
+    ['Infinity', Infinity, false], ['負數', -10, false], ['字串', '100', false],
+  ];
+  for (const [label, px, want] of bandCases) {
+    const got = priceInBand(px);
+    if (got !== want) problems.push(`priceInBand「${label}」應為 ${want},實際 ${got}`);
+  }
+
+  // ---- (c) 接線:handler 必須先擋再買 ----
+  const hStart = src.indexOf('[data-xbuy]');
+  const hEnd = src.indexOf('[data-watch]', hStart);
+  if (hStart < 0 || hEnd < 0) {
+    problems.push('找不到 [data-xbuy] handler 的範圍 —— 這個檢查已失效,請更新');
+  } else {
+    // ★ 先剝掉行註解再比對。第一版沒剝，結果 `portfolio.buy()` 命中的是
+    // handler 上方那句解釋用的註解，於是「買在闘門之前」被誤報。
+    // 這個檢查第一次跑就抵到自己，算它會動的証據。
+    const h = src.slice(hStart, hEnd).replace(/\/\/[^\n]*/g, '');
+    const iGate = h.indexOf('entryGate()'), iBand = h.indexOf('priceInBand('), iBuy = h.indexOf('portfolio.buy(');
+    if (iGate < 0) problems.push('探索買進沒有呼叫 entryGate() —— 市場防禦/水位不可用時仍可進場');
+    if (iBand < 0) problems.push('探索買進沒有呼叫 priceInBand() —— 價格超出下單帶時仍可進場');
+    if (iBuy < 0) problems.push('[data-xbuy] handler 裡找不到 portfolio.buy() —— 這個檢查已失效,請更新');
+    if (iGate >= 0 && iBuy >= 0 && iGate > iBuy) problems.push('entryGate() 寫在 portfolio.buy() 之後 —— 部位已經寫進去才檢查等於沒檢查');
+    if (iBand >= 0 && iBuy >= 0 && iBand > iBuy) problems.push('priceInBand() 寫在 portfolio.buy() 之後 —— 部位已經寫進去才檢查等於沒檢查');
+    if (iGate >= 0 && iBuy > iGate) {
+      // 兩道閘門都必須真的中止,不是只印個警告就繼續往下買
+      const guards = (h.slice(iGate, iBuy).match(/return;/g) || []).length;
+      if (guards < 2) problems.push(`閘門與 portfolio.buy() 之間只有 ${guards} 個 return; —— 擋了之後沒中止,等於只是顯示警告`);
+    }
+  }
+
+  if (problems.length) { fail('進場限制一致性', problems.join('\n    ')); return; }
+  ok('進場限制一致性',
+    `閘門判斷式各只有一份;真值表 ${gateCases.length} + ${bandCases.length} 組全對;探索買進先擋再買`);
+}
+
+// =============================================================
 // 主流程
 // =============================================================
 console.log('\n  SignalDesk 架構驗證\n  ' + '─'.repeat(56));
@@ -615,6 +722,7 @@ checkNoDuplicateConfig();
 checkNoSecrets();
 await checkTradingCosts();
 await checkRealizedWeighting();
+checkEntryGate();
 
 console.log('');
 for (const r of results) {

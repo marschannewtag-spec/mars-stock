@@ -64,10 +64,36 @@ async function compute() {
   state.dataDate = adapter.lastDataDate ? adapter.lastDataDate() : null;
 }
 
-// 只保留價格帶內的股票(config.PRICE_MIN ~ PRICE_MAX,下單/部位大小限制)
+// ---- 進場限制:唯一定義 ----
+// 「今日」分頁與「探索」分頁是兩條獨立的進場路徑,但必須套用完全相同的限制。
+// 以前這兩個判準只寫在 renderToday() 裡,探索分頁的買進完全沒走 ——
+// 市場防禦中、水位算不出來、價格超出下單帶,都還是能從探索頁把部位塞進持倉。
+// 抽成函式不是為了漂亮,是因為各寫一份的話,其中一份遲早會跟另一份分岐,
+// 而分岐的那一天不會有任何錯誤訊息。
+
+// 下單價格帶(config.PRICE_MIN ~ PRICE_MAX,下單/部位大小限制)。
+// 連「沒填時的預設值」也只能有一份 —— 一邊 `?? 0` 一邊 `|| 0` 就是兩套規則。
+function priceBand() {
+  return { lo: config.PRICE_MIN ?? 0, hi: config.PRICE_MAX ?? Infinity };
+}
+function priceInBand(price) {
+  const { lo, hi } = priceBand();
+  return Number.isFinite(price) && price >= lo && price <= hi;
+}
+
+// 只保留價格帶內的股票
 function tradeable(quotes) {
-  const lo = config.PRICE_MIN ?? 0, hi = config.PRICE_MAX ?? Infinity;
-  return quotes.filter((q) => q.price >= lo && q.price <= hi);
+  return quotes.filter((q) => priceInBand(q.price));
+}
+
+// 市場層級進場閘門。
+// fail-closed:水位算不出來(缺 SPY 日線 / 歷史不足)一律當防禦。
+// 舊寫法是 `available && !riskOn` —— available=false 時 blocked 反而變 false,
+// 於是載入沒跑完的日子(SPY 排在 112 檔的最後一批)整個市場總開關靜默失效,
+// marketBanner() 又一起消失,畫面上完全看不出來。正好是最需要被擋的時候。
+function entryGate() {
+  const available = !!(state.market && state.market.available);
+  return { available, blocked: !available || !state.market.riskOn };
 }
 
 // 從已實現紀錄找出近 N 天賣出的代號(冷卻期,避免買→賣→馬上再買的來回洗)
@@ -110,12 +136,8 @@ const money = (x) => `$${x.toFixed(2)}`;
 function renderToday() {
   const s = portfolio.stats();
   const slots = DAILY_MAX - portfolio.positions.length;
-  // fail-closed:水位算不出來(缺 SPY 日線 / 歷史不足)一律當防禦。
-  // 舊寫法是 `available && !riskOn` —— available=false 時 blocked 反而變 false,
-  // 於是載入沒跑完的日子(SPY 排在 112 檔的最後一批)整個市場總開關靜默失效,
-  // marketBanner() 又一起消失,畫面上完全看不出來。正好是最需要被擋的時候。
-  const gateOk = !!(state.market && state.market.available);
-  const blocked = !gateOk || !state.market.riskOn;
+  // 市場閘門一律走 entryGate() —— 與探索分頁的進場檢查是同一個來源
+  const { available: gateOk, blocked } = entryGate();
 
   return `
     <section class="summary">
@@ -475,7 +497,7 @@ function renderPerf() {
     ${equitySVG(p.equity)}
     <div class="bt-grid">
       ${g('總報酬', pct(p.totalReturn), cls(p.totalReturn))}
-      ${g('最大回撤', pctPlain(p.maxDD), 'down')}
+      ${g('平倉序列最深凹陷', pctPlain(p.maxDD), 'down')}
       ${g('交易次數', p.trades)}
       ${g('勝率', pctPlain(p.winRate, 0))}
       ${g('平均獲利', pct(p.avgWin), 'up')}
@@ -483,7 +505,15 @@ function renderPerf() {
       ${g('賺賠比', p.payoff.toFixed(2))}
       ${g('獲利因子', p.profitFactor.toFixed(2))}
     </div>
-    ${s.open > 0 ? `<p class="hint" style="margin-top:12px">另有 ${s.open} 筆未平倉,未實現均報酬 ${pct(s.unrealAvgPct)}(不計入上方曲線)。</p>` : ''}
+    <p class="hint" style="margin-top:12px">
+      <strong>「平倉序列最深凹陷」不是帳戶最大回撤。</strong>這條曲線的橫軸是
+      <strong>第幾筆平倉</strong>,不是日期 —— 一月與十二月平倉的兩筆會被畫成相鄰兩點,
+      中間的時間、以及當時未平倉部位的浮動,在這條曲線上都不存在。
+      它量的是「已平倉事件依序複利後最深的一段凹陷」,不是你帳戶在時間軸上的回撤。
+      要算真正的帳戶回撤必須有<strong>每日 NAV</strong>,而 App 只在你打開它的那幾天看得到價格。
+      <br>「回測」分頁的「最大回撤」是從每日曲線算的,<strong>那個才是回撤</strong>,兩者不能互相引用。
+    </p>
+    ${s.open > 0 ? `<p class="hint" style="margin-top:8px">另有 ${s.open} 筆未平倉,未實現均報酬 ${pct(s.unrealAvgPct)}(不計入上方曲線)。</p>` : ''}
 
     <h2 class="block-head">交易紀錄 <span class="head-note">最新在上</span></h2>
     ${[...portfolio.cashLog].reverse().map(tradeRow).join('')}
@@ -660,8 +690,8 @@ function mcSection() {
   const compLine = !comp ? '' : `你日常用的「${comp.label}」:交易 ${comp.a.single.trades} vs ${comp.b.single.trades} 筆。
     ${!cp ? '' : 顯著(cp)
       ? `<strong>A−B = ${cp.median >= 0 ? '+' : ''}${cp.median.toFixed(2)},95% 區間 [${cp.lo.toFixed(2)}, ${cp.hi.toFixed(2)}] 不跨 0
-         —— ${勝方(cp)} 確實比較好,A 贏的機率 ${pctStr(cp.pAwins)}。</strong>`
-      : `<strong>A 贏的機率 ${pctStr(cp.pAwins)},95% 區間 [${cp.lo.toFixed(2)}, ${cp.hi.toFixed(2)}] 跨過 0
+         —— 在這份資料上 ${勝方(cp)} 較優,抽樣中 A 較優的比例 ${pctStr(cp.pAwins)}。</strong>`
+      : `<strong>抽樣中 A 較優的比例 ${pctStr(cp.pAwins)},95% 區間 [${cp.lo.toFixed(2)}, ${cp.hi.toFixed(2)}] 跨過 0
          —— 統計上分不出高下。</strong> 這種情況下唯一站得住的判準是交易次數,
          而<strong>滑價還沒扣</strong> —— 打平的淨績效配上多 ${Math.round((comp.b.single.trades / comp.a.single.trades - 1) * 100)}% 的交易,只有壞處。`}`;
 
@@ -675,7 +705,7 @@ function mcSection() {
     ${cov}
     <div class="mc-table-wrap"><table class="mc-table">
       <thead><tr>
-        <th>#</th><th>姿態</th><th>A<br>ATR/移動停利</th><th>B<br>+板塊退燒</th><th>A−B<br>95% 區間</th><th>A 贏<br>機率</th><th>交易<br>A/B</th>
+        <th>#</th><th>姿態</th><th>A<br>ATR/移動停利</th><th>B<br>+板塊退燒</th><th>A−B<br>95% 區間</th><th>A 較優<br>抽樣比例</th><th>交易<br>A/B</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
@@ -684,7 +714,12 @@ function mcSection() {
       中位數看報酬品質,中位數到 p5 的距離看這個估計有多不穩。
       <br><strong>A−B 欄</strong>:配對抽樣算出的差異中位數與 95% 區間。
       <strong class="down">區間跨過 0 = 統計上分不出高下</strong> —— 那是「沒有證據」,不是「平手」。
-      <br><strong>A 贏機率</strong>:${MC_RUNS} 次配對抽樣中 A 較優的比例。接近 50% 就等於擲硬幣。
+      <br><strong>A 較優抽樣比例</strong>:${MC_RUNS} 次配對抽樣中,A 的 Calmar 高於 B 的比例。
+      接近 50% 就等於擲硬幣。
+      <br>⚠️ <strong>這個數字不是「A 真的比較好的機率」,也不是 p 值。</strong>
+      它完全條件於<strong>這一條歷史路徑</strong>與 block bootstrap 的抽樣假設
+      (區塊長 ${MC_BLOCK} 天、重抽 ${MC_RUNS} 次)。換一段歷史、換一個區塊長度,它就會變。
+      它能說的只有「在這些假設下,這個差異有多穩定」。
     </p>
     <div class="warn-box" style="margin-top:10px">
       <strong>為什麼要「配對」:</strong>每一次抽樣,A 和 B 用<strong>同一組區塊</strong> ——
@@ -998,6 +1033,25 @@ function bindViewEvents() {
     const sym = el.dataset.xbuy;
     const r = exploreResults && exploreResults.find((x) => x.symbol === sym);
     if (!r || !r.pass) return;
+
+    // ★ 進場閘門。探索分頁可以自由「發現」標的 —— 顯示不受限制 ——
+    // 但真的要寫進持倉,必須通過跟「今日」分頁完全相同的兩道檢查。
+    // 這裡是在 portfolio.buy() 之前擋,不是只把按鈕藏起來:藏按鈕擋不住
+    // 任何事,而且「看得到但按不動」比「按下去被拒絕並說明原因」更難懂。
+    const gate = entryGate();
+    if (gate.blocked) {
+      toast(gate.available
+        ? `市場防禦中,暫停進場 —— ${sym} 可以先加觀察名單`
+        : `市場水位算不出來(今日資料不齊),保守起見暫停進場 —— ${sym} 可以先加觀察名單`);
+      return;
+    }
+    if (!priceInBand(r.entry)) {
+      const { lo, hi } = priceBand();
+      toast(`${sym} 進場價 ${Number.isFinite(r.entry) ? money(r.entry) : '無效'} 超出下單價格帶 ` +
+            `$${lo}~${Number.isFinite(hi) ? '$' + hi : '∞'},不進場`);
+      return;
+    }
+
     const u = UNIVERSE.find((x) => x.symbol === sym);   // 在 universe 裡就沿用它的板塊
     const res = portfolio.buy({
       symbol: sym, name: u ? u.name : sym, etf: u ? u.etf : null,
@@ -1331,7 +1385,12 @@ function pairedMonteCarlo(retsA, retsB, runs = MC_RUNS, blockSize = MC_BLOCK) {
     a: pack(A),
     b: pack(B),
     paired: {
-      pAwins: aWins / runs,        // A 贏的機率 —— 可以直接下判斷的數字
+      // 重抽樣中 A 的 Calmar 高於 B 的比例。
+      // ⚠️ 不是「A 真的比較好的機率」,也不是 p 值,也不是未來獲利的機率。
+      // 這個數字條件於單一條歷史路徑 + 本函式的抽樣假設(blockSize/runs/種子)。
+      // 以前這行註解寫「可以直接下判斷的數字」—— 那是錯的,而且錯在註解裡比
+      // 錯在 UI 裡更糟:註解是給下一個改這段程式的人看的。
+      pAwins: aWins / runs,
       median: q(diffs, 0.5),       // A−B 的中位數
       lo: q(diffs, 0.025),         // 95% 區間下緣
       hi: q(diffs, 0.975),         // 95% 區間上緣。區間跨過 0 = 分不出高下
