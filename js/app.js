@@ -644,8 +644,10 @@ function mcSection() {
     // 會被壓到每秒、閒置 5 分鐘後每分鐘才跑一次 —— 25 × 30 秒就是 12 分鐘。
     // 同一份程式、同一份資料,前景 10 秒、背景 4 分鐘以上,當天實測過。
     // 所以要寫的不是「很慢」,是「別切到背景」。
-    return `<p class="empty">六姿態 × A/B 各跑一次 + 配對 bootstrap(12 次 16 年回測 + 6 組 × ${MC_RUNS} 次抽樣)。
-      <br><strong>純運算約 10 秒</strong>,加上讀 IndexedDB 大約 12~15 秒跑完 —— 2026-10-13 實測。
+    return `<p class="empty">六姿態 × A/B 各跑一次 + 配對 bootstrap
+      (12 次 16 年回測 + 6 組 × ${MC_SEEDS.length} 顆種子 × ${MC_RUNS} 次抽樣)。
+      <br><strong>純運算約 11 秒</strong>,加上讀 IndexedDB 大約 13~16 秒跑完。
+      (多種子只多約 0.9 秒 —— 瓶頸是那 12 次回測,不是抽樣。)
       <br>⚠️ <strong>但請讓這個分頁留在前景。</strong>切到背景的話 Chrome 會把中間的等待節流,
       同一件事會變成<strong>十幾分鐘</strong>(2026-08-19 那次「12 分 22 秒」就是這樣來的,不是運算慢)。
       <br>運算期間<strong>畫面會凍住、按鈕沒反應</strong>,這是同步運算,<strong>不是當掉</strong>。跑完表格才會出現。</p>
@@ -722,13 +724,14 @@ function mcSection() {
       中位數看報酬品質,中位數到 p5 的距離看這個估計有多不穩。
       <br><strong>A−B 欄</strong>:配對抽樣算出的差異中位數與 95% 區間。
       <strong class="down">區間跨過 0 = 統計上分不出高下</strong> —— 那是「沒有證據」,不是「平手」。
-      <br><strong>A 較優抽樣比例</strong>:${MC_RUNS} 次配對抽樣中,A 的 Calmar 高於 B 的比例。
+      <br><strong>A 較優抽樣比例</strong>:配對抽樣中 A 的 Calmar 高於 B 的比例。
       接近 50% 就等於擲硬幣。
-      <br>⚠️ <strong>這個數字不是「A 真的比較好的機率」,也不是 p 值。</strong>
+      <br>⚠️ <strong>這個數字不是「A 真的比較好的機率」,也不是 p 值,也不是未來獲利的機率。</strong>
       它完全條件於<strong>這一條歷史路徑</strong>與 block bootstrap 的抽樣假設
-      (區塊長 ${MC_BLOCK} 天、重抽 ${MC_RUNS} 次)。換一段歷史、換一個區塊長度,它就會變。
+      (區塊長 ${MC_BLOCK} 天、每顆種子重抽 ${MC_RUNS} 次)。換一段歷史、換一個區塊長度,它就會變。
       它能說的只有「在這些假設下,這個差異有多穩定」。
     </p>
+    ${seedSpreadBlock()}
     <div class="warn-box" style="margin-top:10px">
       <strong>為什麼要「配對」:</strong>每一次抽樣,A 和 B 用<strong>同一組區塊</strong> ——
       也就是讓兩者經歷完全相同的市場路徑。共同的大跌大漲在相減時會抵銷掉,
@@ -1293,7 +1296,7 @@ async function runAllPresetsMCInner() {
     await sleep(0);
 
     // 配對抽樣:一次跑完,同時得到 A、B 各自的分佈與 A−B 的分佈
-    mcProgress = `${P.label} … 配對 bootstrap ${MC_RUNS} 次 (${results.length + 1}/6)`;
+    mcProgress = `${P.label} … 配對 bootstrap ${MC_SEEDS.length}×${MC_RUNS} 次 (${results.length + 1}/6)`;
     render(); await sleep(30);
     const pm = pairedMonteCarlo(btA.dailyReturns, btB.dailyReturns, MC_RUNS, MC_BLOCK);
     await sleep(0);
@@ -1310,6 +1313,104 @@ async function runAllPresetsMCInner() {
   results.sort((x, y) => (y.a.mc?.calmar.median ?? -99) - (x.a.mc?.calmar.median ?? -99));
   mcResults = results;
   // mcRunning / render 交給外層的 finally 統一負責,生命週期只有一個出口
+}
+
+// =============================================================
+// 可重現的 PRNG —— xorshift32
+// -------------------------------------------------------------
+// 為什麼不用 Math.random():它沒有種子。同一份資料、同一份程式,每次跑出來
+// 的「幾比幾」都不同 —— 專案文件裡抱怨過的抖動(5/6 -> 4/6 -> 3/6 -> 六個
+// 全分不出 -> 1/6)有一部分就是抽樣雜訊。不可重現的閘門當不了閘門:
+// 你分不出「改動造成的差異」與「換一次隨機數造成的差異」。
+//
+// ⚠️ 但固定種子只是**必要**,不是充分。單一固定種子只是把雜訊凍結成某一個
+//    特定值,不會讓它消失 —— 你會得到一個很穩定、而且可能剛好運氣好的答案。
+//    所以這裡跑**多組事先指定的種子**,並回報跨種子的離散度。
+//    如果結論在不同種子之間翻盤,那才是真正需要知道的事。
+// =============================================================
+function xorshift32(seed) {
+  // 種子必須非零:0 是 xorshift 的不動點,會永遠回傳 0
+  let x = (seed | 0) || 0x9E3779B9;
+  return () => {
+    x ^= x << 13; x |= 0;
+    x ^= x >>> 17;
+    x ^= x << 5;  x |= 0;
+    // >>> 0 先轉無號再除 —— 不轉的話負數會變出負的「機率」
+    return (x >>> 0) / 4294967296;
+  };
+}
+
+// 事先指定的種子組。寫死在原始碼裡是刻意的:「跑之前才挑種子」等於沒固定。
+// 這五個是常見的混淆常數,不是挑出來讓結果好看的 —— 這點只能靠紀錄保證。
+const MC_SEEDS = [0x9E3779B9, 0x85EBCA6B, 0xC2B2AE35, 0x27D4EB2F, 0x165667B1];
+
+// 一次抽樣的區塊起點。合法起點是 0 ... n-blockSize(含),共 n-blockSize+1 個。
+//
+// ★ 舊版寫 `rng() * (n - blockSize)`,最後一個合法起點**永遠抽不到** ——
+//   也就是「包含最後一筆日報酬的那個完整區塊」不可能出現在任何一次重抽樣裡。
+//   以 n≈3900、blockSize=20 來說量級極小(3878 個起點少 1 個),
+//   但這個錯的危險在另一個方向:回測視窗一縮短,被排除的尾段佔比就會放大,
+//   而且跟現在一樣不會有任何徵兆。
+function blockStarts(n, blockSize, nBlocks, rng) {
+  const starts = [];
+  for (let b = 0; b < nBlocks; b++) starts.push(Math.floor(rng() * (n - blockSize + 1)));
+  return starts;
+}
+
+// 跨種子穩定度 —— 固定種子的「充分」那一半
+// -------------------------------------------------------------
+// 固定一顆種子只是讓結果可重現,不會讓它變可信:雜訊被凍結成某個特定值,
+// 你會得到一個很穩定、而且可能剛好運氣好的答案。這一塊回報的是
+// 「換一顆種子,同樣跑 MC_RUNS 次,結論會不會變」。
+//
+// 符號翻轉比極差大小嚴重得多:如果有的種子說 A 較優、有的說 B 較優,
+// 那代表這個差異的符號本身就不穩定,不該拿來下任何結論。
+function seedSpreadBlock() {
+  const withSpread = mcResults.filter((r) => r.paired && r.paired.seedSpread);
+  if (!withSpread.length) return '';
+  const sp0 = withSpread[0].paired.seedSpread;
+  const flips = withSpread.filter((r) => r.paired.seedSpread.signFlips);
+  const worst = withSpread.reduce((acc, r) => {
+    const s = r.paired.seedSpread;
+    const range = s.pAwinsMax - s.pAwinsMin;
+    return range > acc.range ? { range, label: r.label } : acc;
+  }, { range: -1, label: '' });
+
+  const rows = withSpread.map((r) => {
+    const s = r.paired.seedSpread;
+    return `<tr>
+      <td>${r.label}</td>
+      <td class="mono">${s.medianMin >= 0 ? '+' : ''}${s.medianMin.toFixed(3)} ~ ${s.medianMax >= 0 ? '+' : ''}${s.medianMax.toFixed(3)}</td>
+      <td class="mono">${(s.pAwinsMin * 100).toFixed(1)}% ~ ${(s.pAwinsMax * 100).toFixed(1)}%</td>
+      <td class="mono ${s.signFlips ? 'down' : 'muted'}">${s.signFlips ? '⚠️ 方向翻轉' : '一致'}</td>
+    </tr>`;
+  }).join('');
+
+  return `
+    <h2 class="block-head">跨種子穩定度
+      <span class="head-note">${sp0.seeds.length} 顆事先指定的種子 × ${sp0.runsPerSeed} 次</span></h2>
+    <p class="hint" style="margin:0 0 8px">
+      上面那張表的數字是把 ${sp0.seeds.length} 顆種子的樣本<strong>全部併起來</strong>算的
+      (共 ${sp0.seeds.length * sp0.runsPerSeed} 次)。這張表問的是另一件事:
+      <strong>如果只用其中一顆種子、同樣跑 ${sp0.runsPerSeed} 次,答案會差多少。</strong>
+      種子寫死在 app.js 的 <code>MC_SEEDS</code> 裡 —— 跑之前才挑種子等於沒有固定種子。
+    </p>
+    <div class="mc-table-wrap"><table class="mc-table">
+      <thead><tr><th>姿態</th><th>A−B 中位數<br>跨種子範圍</th><th>A 較優比例<br>跨種子範圍</th><th>符號</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <p class="hint" style="margin-top:8px">
+      ${flips.length
+        ? `<strong class="down">⚠️ ${flips.length} 個姿態的 A−B 中位數在不同種子之間變號</strong>
+           (${flips.map((r) => r.label).join('、')})—— 這些姿態的差異<strong>方向本身就不穩定</strong>,
+           不管併起來的區間長什麼樣,都不該拿來下結論。`
+        : `<strong>${withSpread.length} 個姿態的 A−B 中位數在所有種子下符號一致。</strong>
+           這代表方向穩定,但不代表幅度可信 —— 幅度看上面那張表的 95% 區間。`}
+      <br>「A 較優比例」跨種子極差最大的是<strong>${worst.label}</strong>,
+      差 ${(worst.range * 100).toFixed(1)} 個百分點。
+      這個極差就是「只跑一顆種子」會承受的抖動量 —— 它不會因為把種子寫死而消失,
+      只會變成看不見。
+    </p>`;
 }
 
 // =============================================================
@@ -1331,7 +1432,7 @@ async function runAllPresetsMCInner() {
 // 順帶:這樣做比原本「跑兩次獨立 monteCarlo」還省 —— 抽樣次數一樣,
 // 但多拿到差異的分佈。
 // =============================================================
-function pairedMonteCarlo(retsA, retsB, runs = MC_RUNS, blockSize = MC_BLOCK) {
+function pairedMonteCarlo(retsA, retsB, runs = MC_RUNS, blockSize = MC_BLOCK, seeds = MC_SEEDS) {
   const empty = { calmar: { median: 0, p5: 0 }, cagr: { median: 0, p5: 0 }, maxdd: { median: 0, worst: 0 }, sharpe: { median: 0 } };
   // 兩邊都是從 warmup 跑到同一個日曆末端,長度本來就該一樣;
   // 取 min 只是防呆,避免哪天改了 warmup 邏輯就悄悄錯位。
@@ -1361,33 +1462,78 @@ function pairedMonteCarlo(retsA, retsB, runs = MC_RUNS, blockSize = MC_BLOCK) {
     return { cagr, maxDD, sharpe: (mean / sd) * Math.sqrt(252), calmar: maxDD !== 0 ? cagr / Math.abs(maxDD) : 0 };
   };
 
+  const q = (arr, p) => { const t = [...arr].sort((x, y) => x - y); return t[Math.floor(p * (t.length - 1))]; };
+
+  // 一組種子跑 runs 次,回傳原始樣本
+  const oneSeed = (seed) => {
+    const rng = xorshift32(seed);
+    const A = { calmars: [], cagrs: [], maxdds: [], sharpes: [] };
+    const B = { calmars: [], cagrs: [], maxdds: [], sharpes: [] };
+    const diffs = [];
+    let aWins = 0;
+    for (let r = 0; r < runs; r++) {
+      // ★ 同一組起點,A 和 B 共用 —— 這一行就是「配對」的全部意義。
+      // 每個種子各自推進自己的序列,但 A/B 在同一輪拿到的是同一組起點,
+      // 所以配對設計在多種子下完整保留。
+      const starts = blockStarts(n, blockSize, nBlocks, rng);
+      const sa = statsFor(retsA, starts);
+      const sb = statsFor(retsB, starts);
+      A.calmars.push(sa.calmar); A.cagrs.push(sa.cagr); A.maxdds.push(sa.maxDD); A.sharpes.push(sa.sharpe);
+      B.calmars.push(sb.calmar); B.cagrs.push(sb.cagr); B.maxdds.push(sb.maxDD); B.sharpes.push(sb.sharpe);
+      const d = sa.calmar - sb.calmar;   // 正 = 這一輪 A 較優
+      diffs.push(d);
+      if (d > 0) aWins++;
+    }
+    return { A, B, diffs, aWins };
+  };
+
+  const seedList = (Array.isArray(seeds) && seeds.length ? seeds : [MC_SEEDS[0]]);
+  const per = seedList.map((seed) => {
+    const o = oneSeed(seed);
+    return {
+      seed, runs,
+      pAwins: o.aWins / runs,
+      median: q(o.diffs, 0.5),
+      lo: q(o.diffs, 0.025),
+      hi: q(o.diffs, 0.975),
+      raw: o,
+    };
+  });
+
+  // 彙總:把所有種子的樣本併起來。種子之間只是不同的隨機抽取,
+  // 併起來就是「更多次 bootstrap」,統計上是正當的。
   const A = { calmars: [], cagrs: [], maxdds: [], sharpes: [] };
   const B = { calmars: [], cagrs: [], maxdds: [], sharpes: [] };
   const diffs = [];
   let aWins = 0;
-
-  for (let r = 0; r < runs; r++) {
-    // ★ 同一組起點,A 和 B 共用 —— 這一行就是「配對」的全部意義
-    const starts = [];
-    for (let b = 0; b < nBlocks; b++) starts.push(Math.floor(Math.random() * (n - blockSize)));
-
-    const sa = statsFor(retsA, starts);
-    const sb = statsFor(retsB, starts);
-    A.calmars.push(sa.calmar); A.cagrs.push(sa.cagr); A.maxdds.push(sa.maxDD); A.sharpes.push(sa.sharpe);
-    B.calmars.push(sb.calmar); B.cagrs.push(sb.cagr); B.maxdds.push(sb.maxDD); B.sharpes.push(sb.sharpe);
-
-    const d = sa.calmar - sb.calmar;   // 正 = 這一輪 A 較優
-    diffs.push(d);
-    if (d > 0) aWins++;
+  for (const p of per) {
+    for (const k of ['calmars', 'cagrs', 'maxdds', 'sharpes']) {
+      A[k].push(...p.raw.A[k]); B[k].push(...p.raw.B[k]);
+    }
+    diffs.push(...p.raw.diffs);
+    aWins += p.raw.aWins;
   }
 
-  const q = (arr, p) => { const s = [...arr].sort((x, y) => x - y); return s[Math.floor(p * (s.length - 1))]; };
   const pack = (S) => ({
     calmar: { median: q(S.calmars, 0.5), p5: q(S.calmars, 0.05) },
     cagr: { median: q(S.cagrs, 0.5), p5: q(S.cagrs, 0.05) },
     maxdd: { median: q(S.maxdds, 0.5), worst: q(S.maxdds, 0.05) },
     sharpe: { median: q(S.sharpes, 0.5) },
   });
+
+  // 跨種子離散度 —— 這就是「換一次種子結論會不會翻盤」的答案。
+  // 方向不一致(有的種子 A−B 中位數為正、有的為負)比極差大小更嚴重:
+  // 那代表這個差異的符號本身就不穩定,不該拿來下任何結論。
+  const meds = per.map((p) => p.median), ps = per.map((p) => p.pAwins);
+  const seedSpread = {
+    seeds: seedList.slice(),
+    runsPerSeed: runs,
+    perSeed: per.map(({ seed, pAwins, median, lo, hi }) => ({ seed, pAwins, median, lo, hi })),
+    medianMin: Math.min(...meds), medianMax: Math.max(...meds),
+    pAwinsMin: Math.min(...ps), pAwinsMax: Math.max(...ps),
+    // 有任何一組種子的中位數符號跟其他組相反
+    signFlips: !(meds.every((m) => m >= 0) || meds.every((m) => m <= 0)),
+  };
 
   return {
     a: pack(A),
@@ -1398,11 +1544,12 @@ function pairedMonteCarlo(retsA, retsB, runs = MC_RUNS, blockSize = MC_BLOCK) {
       // 這個數字條件於單一條歷史路徑 + 本函式的抽樣假設(blockSize/runs/種子)。
       // 以前這行註解寫「可以直接下判斷的數字」—— 那是錯的,而且錯在註解裡比
       // 錯在 UI 裡更糟:註解是給下一個改這段程式的人看的。
-      pAwins: aWins / runs,
+      pAwins: aWins / diffs.length,
       median: q(diffs, 0.5),       // A−B 的中位數
       lo: q(diffs, 0.025),         // 95% 區間下緣
       hi: q(diffs, 0.975),         // 95% 區間上緣。區間跨過 0 = 分不出高下
-      runs,
+      runs: diffs.length,          // 總抽樣次數 = runs × 種子數
+      seedSpread,
     },
   };
 }

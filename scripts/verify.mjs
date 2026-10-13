@@ -839,6 +839,140 @@ function checkEntryGate() {
 }
 
 // =============================================================
+// 12. Monte Carlo 可重現性與抽樣正確性
+// -------------------------------------------------------------
+// 這個閘門(不變量 6)CI 跑不了 —— 回測需要瀏覽器 IndexedDB 裡的 16 年資料。
+// 但閘門用的**抽樣機制**是純函式,可以在這裡釘死。
+//
+// 兩個問題:
+//   (a) 舊版用 Math.random(),沒有種子 -> 同一份資料每次跑出來的「幾比幾」
+//       都不同。不可重現的閘門當不了閘門。
+//   (b) 舊版的起點是 `Math.random() * (n - blockSize)`,最後一個合法起點
+//       **永遠抽不到** —— 包含最後一筆日報酬的那個完整區塊不可能出現。
+//
+// 這裡用跟第 11 項相同的手法:把 app.js 裡那幾個真實函式的原始碼抽出來,
+// 在沙箱裡執行。測的是真的程式。
+// =============================================================
+function checkMonteCarlo() {
+  const src = readFileSync(rel('js/app.js'), 'utf8');
+  const problems = [];
+
+  const grab = (name) => {
+    const i = src.indexOf(`function ${name}(`);
+    if (i < 0) return null;
+    const open = src.indexOf('{', i);
+    let depth = 0;
+    for (let j = open; j < src.length; j++) {
+      if (src[j] === '{') depth++;
+      else if (src[j] === '}' && --depth === 0) return src.slice(i, j + 1);
+    }
+    return null;
+  };
+  const fnXs = grab('xorshift32'), fnBs = grab('blockStarts'), fnMc = grab('pairedMonteCarlo');
+  const seedsLine = (src.match(/const MC_SEEDS = \[[^\]]+\];/) || [])[0];
+  if (!fnXs || !fnBs || !fnMc || !seedsLine) {
+    fail('MC 抽樣正確性', 'app.js 找不到 xorshift32 / blockStarts / pairedMonteCarlo / MC_SEEDS');
+    return;
+  }
+  const M = new Function(
+    `const MC_RUNS = 1000, MC_BLOCK = 20;\n${seedsLine}\n${fnXs}\n${fnBs}\n${fnMc}\n` +
+    `return { xorshift32, blockStarts, pairedMonteCarlo, MC_SEEDS };`)();
+
+  // ---- (a) 種子組本身 ----
+  if (!Array.isArray(M.MC_SEEDS) || M.MC_SEEDS.length < 2) {
+    problems.push(`MC_SEEDS 只有 ${M.MC_SEEDS && M.MC_SEEDS.length} 顆 —— 單一固定種子只是把雜訊凍結,不是消除`);
+  }
+  if ((M.MC_SEEDS || []).some((x) => (x | 0) === 0)) problems.push('MC_SEEDS 含 0 —— 0 是 xorshift 的不動點,會永遠回傳 0');
+  if (new Set(M.MC_SEEDS || []).size !== (M.MC_SEEDS || []).length) problems.push('MC_SEEDS 有重複的種子,等於白跑一輪');
+
+  // ---- (b) PRNG:可重現、不同種子不同、值域正確 ----
+  const seq = (seed, k) => { const g = M.xorshift32(seed); return Array.from({ length: k }, () => g()); };
+  const s1 = seq(M.MC_SEEDS[0], 64), s1b = seq(M.MC_SEEDS[0], 64), s2 = seq(M.MC_SEEDS[1], 64);
+  if (s1.join() !== s1b.join()) problems.push('同一顆種子跑兩次序列不同 —— PRNG 不可重現');
+  if (s1.join() === s2.join()) problems.push('兩顆不同的種子產生相同序列 —— 種子沒有生效');
+  if (!s1.every((x) => x >= 0 && x < 1)) problems.push('PRNG 產生了 [0,1) 以外的值(負數會變出負的「機率」)');
+  if (new Set(seq(M.MC_SEEDS[0], 2000)).size < 1900) problems.push('PRNG 在 2000 次內大量重複,週期過短');
+  // 種子 0 必須被擋掉(不動點)
+  if (seq(0, 8).every((x) => x === 0)) problems.push('種子 0 讓 PRNG 永遠回傳 0 —— 需要非零 fallback');
+
+  // ---- (c) 抽樣範圍:最後一個合法起點必須抽得到,且不得越界 ----
+  // 不靠「跑很多次剛好有抽到」當證據 —— 直接用定值 rng 證明邊界對應關係。
+  const N = 100, BS = 20, LAST = N - BS;          // 合法起點 0 ... 80
+  const atZero = M.blockStarts(N, BS, 1, () => 0)[0];
+  const atTop = M.blockStarts(N, BS, 1, () => 1 - 2 ** -32)[0];   // PRNG 能回傳的最大值
+  if (atZero !== 0) problems.push(`rng()=0 時起點應為 0,實際 ${atZero}`);
+  if (atTop !== LAST) {
+    problems.push(`rng() 取最大值時起點應為 ${LAST}(最後一個合法起點),實際 ${atTop}` +
+      `${atTop === LAST - 1 ? ' —— 這正是舊版 `rng() * (n - blockSize)` 的症狀:最後一個合法起點永遠抽不到' : ''}`);
+  }
+  // 越界檢查:rng 理論上到不了 1,但如果有人改成 Math.random() 的近似或換了 PRNG,
+  // 這條會抓到「區塊讀到 undefined」的情況
+  const over = M.blockStarts(N, BS, 1, () => 0.9999999999)[0];
+  if (over > LAST) problems.push(`抽到越界起點 ${over}(上限 ${LAST})—— 區塊會讀到 undefined,指標全變 NaN`);
+  // 覆蓋率:每一個合法起點都要真的抽得到
+  const seen = new Set();
+  const g = M.xorshift32(M.MC_SEEDS[0]);
+  for (let i = 0; i < 200000; i++) seen.add(M.blockStarts(N, BS, 1, g)[0]);
+  const missing = [];
+  for (let k = 0; k <= LAST; k++) if (!seen.has(k)) missing.push(k);
+  if (missing.length) problems.push(`20 萬次抽樣後仍有 ${missing.length} 個合法起點沒被抽到:${missing.slice(0, 5).join(',')}…`);
+  if ([...seen].some((k) => k < 0 || k > LAST)) problems.push('抽到了範圍外的起點');
+
+  // ---- (d) 配對設計:A 與 B 必須共用同一組起點 ----
+  // 證明手法:餵完全相同的兩條報酬序列。配對正確時每一輪的 A−B 恆為 0;
+  // 如果 A、B 各自抽樣,即使資料一樣也會抽出不同的路徑、產生非零差異。
+  const rets = [];
+  const gr = M.xorshift32(999);
+  for (let i = 0; i < 400; i++) rets.push((gr() - 0.48) * 0.02);
+  const same = M.pairedMonteCarlo(rets, rets.slice(), 120, 20, M.MC_SEEDS.slice(0, 2));
+  if (!same.paired) problems.push('pairedMonteCarlo 在合法長度下回傳 paired: null');
+  else {
+    if (same.paired.median !== 0 || same.paired.lo !== 0 || same.paired.hi !== 0) {
+      problems.push(`A 與 B 餵相同資料,A−B 卻不是 0(median ${same.paired.median})—— 配對設計被破壞,兩邊各自抽樣了`);
+    }
+    if (same.paired.pAwins !== 0) problems.push(`相同資料的 pAwins 應為 0(嚴格大於才算贏),實際 ${same.paired.pAwins}`);
+  }
+
+  // ---- (e) 可重現性 + 跨種子摘要 ----
+  const A2 = [], B2 = [];
+  const gr2 = M.xorshift32(4242);
+  for (let i = 0; i < 400; i++) { A2.push((gr2() - 0.48) * 0.02); B2.push((gr2() - 0.49) * 0.022); }
+  const SEEDS = M.MC_SEEDS.slice(0, 3);
+  const r1 = M.pairedMonteCarlo(A2, B2, 150, 20, SEEDS);
+  const r2 = M.pairedMonteCarlo(A2, B2, 150, 20, SEEDS);
+  if (r1.paired.median !== r2.paired.median || r1.paired.pAwins !== r2.paired.pAwins) {
+    problems.push('同樣的種子組跑兩次結果不同 —— 閘門仍不可重現');
+  }
+  const rOther = M.pairedMonteCarlo(A2, B2, 150, 20, [M.MC_SEEDS[3]]);
+  if (rOther.paired.median === r1.paired.median) problems.push('換種子後結果完全相同 —— 種子沒有傳進抽樣');
+
+  const sp = r1.paired.seedSpread;
+  if (!sp) problems.push('paired 沒有回報 seedSpread —— 無法得知換種子會不會翻盤');
+  else {
+    if (sp.perSeed.length !== SEEDS.length) problems.push(`seedSpread.perSeed 有 ${sp.perSeed.length} 筆,應為 ${SEEDS.length}`);
+    if (sp.runsPerSeed !== 150) problems.push(`seedSpread.runsPerSeed 應為 150,實際 ${sp.runsPerSeed}`);
+    if (r1.paired.runs !== 150 * SEEDS.length) {
+      problems.push(`總抽樣次數應為 ${150 * SEEDS.length}(每顆種子 150 × ${SEEDS.length} 顆),實際 ${r1.paired.runs}`);
+    }
+    const meds = sp.perSeed.map((p) => p.median);
+    if (Math.abs(sp.medianMin - Math.min(...meds)) > 1e-15 || Math.abs(sp.medianMax - Math.max(...meds)) > 1e-15) {
+      problems.push('seedSpread 的 medianMin/Max 跟 perSeed 算不出來的值不一致');
+    }
+    const want = !(meds.every((m) => m >= 0) || meds.every((m) => m <= 0));
+    if (sp.signFlips !== want) problems.push(`signFlips 判斷錯誤:應為 ${want},實際 ${sp.signFlips}`);
+    // 每顆種子都要真的用到不同序列(否則「多種子」是假的)
+    if (new Set(meds).size === 1 && SEEDS.length > 1) {
+      problems.push('所有種子得到完全相同的中位數 —— 多種子沒有真的分開抽樣');
+    }
+  }
+
+  if (problems.length) { fail('MC 抽樣正確性', problems.join('\n    ')); return; }
+  ok('MC 抽樣正確性',
+    `${M.MC_SEEDS.length} 顆非零種子可重現;最後一個合法起點(${LAST})抽得到且不越界;` +
+    `${LAST + 1} 個起點全覆蓋;A/B 共用起點(相同輸入 A-B 恆為 0);跨種子摘要正確`);
+}
+
+// =============================================================
 // 主流程
 // =============================================================
 console.log('\n  SignalDesk 架構驗證\n  ' + '─'.repeat(56));
@@ -854,6 +988,7 @@ checkNoSecrets();
 await checkTradingCosts();
 await checkRealizedWeighting();
 checkEntryGate();
+checkMonteCarlo();
 
 console.log('');
 for (const r of results) {

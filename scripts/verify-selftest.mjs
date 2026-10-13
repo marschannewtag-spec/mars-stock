@@ -264,6 +264,46 @@ const cases = [
       ''),
     restore: restoreGit('js/portfolio.js'),
   },
+  {
+    // 抽樣範圍退回 off-by-one —— 最後一個合法起點永遠抽不到,
+    // 也就是包含最後一筆日報酬的那個完整區塊不可能出現在任何重抽樣裡。
+    name: 'MC 抽樣少一個起點',
+    expect: 'MC 抽樣正確性',
+    break: () => patch('js/app.js',
+      'Math.floor(rng() * (n - blockSize + 1))',
+      'Math.floor(rng() * (n - blockSize))'),
+    restore: restoreGit('js/app.js'),
+  },
+  {
+    // PRNG 退回 Math.random():種子形同不存在,閘門重新變成不可重現。
+    name: 'MC 退回不可重現',
+    expect: 'MC 抽樣正確性',
+    break: () => patch('js/app.js',
+      'return (x >>> 0) / 4294967296;',
+      'return Math.random();'),
+    restore: restoreGit('js/app.js'),
+  },
+  {
+    // 配對設計被破壞:A 與 B 各自抽一組起點。
+    // 這是這個專案最容易重犯的錯 —— 2026 年度健檢就是那樣跑的,
+    // 共同衝擊變成雜訊把真實差異淹掉,連跑兩次勝負直接翻盤。
+    name: 'MC 配對被破壞',
+    expect: 'MC 抽樣正確性',
+    break: () => patch('js/app.js',
+      'const sb = statsFor(retsB, starts);',
+      'const sb = statsFor(retsB, blockStarts(n, blockSize, nBlocks, rng));'),
+    restore: restoreGit('js/app.js'),
+  },
+  {
+    // 多種子變成假的:每一輪都用同一顆種子,跨種子離散度恆為 0,
+    // 於是「換種子會不會翻盤」這個問題被回答成「永遠不會」。
+    name: 'MC 種子沒傳進抽樣',
+    expect: 'MC 抽樣正確性',
+    break: () => patch('js/app.js',
+      'const rng = xorshift32(seed);',
+      'const rng = xorshift32(MC_SEEDS[0]);'),
+    restore: restoreGit('js/app.js'),
+  },
 ];
 
 // =============================================================
