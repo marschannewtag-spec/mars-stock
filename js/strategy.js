@@ -219,9 +219,14 @@ export function generateSells(positions, quotes, rankedSectors, params = STRATEG
     const fullReasons = [];
     if (price <= hardStop) fullReasons.push(`觸及停損 $${hardStop.toFixed(2)} (${(pnlPct * 100).toFixed(1)}%)`);
     if (price <= trailStop && price > hardStop) fullReasons.push(`移動停利 $${trailStop.toFixed(2)}`);
-    // 板塊退燒 + 跌破MA20:六姿態 16 年 A/B 測試證實這兩條規則傷害 Calmar
-    // (5/6 姿態 A>B,交易次數暴增造成 whipsaw「昨天買今天賣」),故日常引擎
-    // 預設關閉,只留已驗證的 ATR 停損 + 移動停利。要恢復設 params.useSignalExits=true。
+    // 板塊退燒 + 跌破MA20:六姿態 16 年 A/B 測試的結論是「關掉」。
+    // ⚠️ 這裡原本寫「5/6 姿態 A>B」—— 那是舊的數字,別再引用。
+    //    2026-10-13 含 0.25% 手續費重跑:1/6 有統計證據(方向 A)、5/6 分不出、
+    //    0/6 是 B 較優。真正的依據不是「幾比幾」(那個數字在五次分析裡抖成
+    //    5/6 → 4/6 → 3/6 → 6/6分不出 → 1/6),而是**把成本放進去之後六個姿態
+    //    的 A−B 全部往 A 移動、沒有一個往 B 移動**,而且 B 多做 16%~96% 的交易。
+    //    完整數字見 docs/health-2026.md 第 3 項。
+    // 故日常引擎預設關閉,只留已驗證的 ATR 停損 + 移動停利。要恢復設 params.useSignalExits=true。
     if (params.useSignalExits) {
       if (pos.etf && (rankBy[pos.etf] ?? 99) > params.sectorExitRank) fullReasons.push('板塊退燒');
       if (q.relMA20 <= params.momentumBreakBuffer) fullReasons.push('跌破 MA20，動能轉弱');

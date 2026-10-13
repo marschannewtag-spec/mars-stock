@@ -6,8 +6,47 @@
 // =============================================================
 
 import { MAX_POSITIONS } from './strategy.js';
+import { PRESETS } from './presets.js';
+import { config } from './config.js';
+
+// 日常實際使用的倉位數 —— 跟 app.js 的 DAILY_MAX 用同一條式子算,
+// 因為「一個部位佔帳戶幾分之幾」取決於**現在這個 preset 開幾個倉**,
+// 不是 strategy.js 的那個常數。composite 是 6,兩者目前相等。
+//
+// ⚠️ 已知不一致(沒有在這次一起改,因為那是交易邏輯不是報表):
+//    下面的 isFull() 用的是寫死的 MAX_POSITIONS(6),不是這個值。
+//    把 config.DAILY_PRESET 換成 marcus(maxPositions: 3)之後,
+//    畫面會說 3 個倉位、訂單清單會配 1/3,但 isFull() 仍會放行到第 6 檔。
+//    這是既有行為,改它等於改部位上限 —— 要由專案擁有者決定。
+//    見 docs/AUDIT-2026-10-13.md 問題 G。
+const DAILY_POS = (PRESETS[config.DAILY_PRESET] || PRESETS.composite).params.maxPositions ?? MAX_POSITIONS;
 
 const STORAGE_KEY = 'usstock_portfolio_v1';
+
+// =============================================================
+// 一筆平倉對「整個帳戶」的影響 —— 這是 2026-10-13 修掉的一個 5 倍放大錯誤
+// -------------------------------------------------------------
+// 錯的版本是 `nav *= (1 + fraction * pnlPct)`。
+// fraction 是「這個部位賣掉幾成」(階梯減碼用),**不是這個部位佔帳戶幾成**。
+// 所以一筆 −6.5% 的全出場,會被當成「整個帳戶 −6.5%」來複利。
+//
+// 但這套策略**同時持有 N 檔、每檔 1/N**(N = 現行 preset 的 maxPositions,綜合是 6;
+// backtest-real.js 的 alloc = nav / maxPositions 也是同一個模型)。
+// 一檔跌 6.5%,帳戶只少 1.08%。
+//
+// 真實後果:使用者的 5 筆停損分別是 −6.5 / −6.1 / −7.9 / −9.5 / −6.9%,
+// 畫面顯示「已實現報酬 **−31.9%**」,實際是 **−6.0%** —— 放大了 5.3 倍。
+// 這不是小數點問題:它會讓人以為策略已經崩了而把它關掉,
+// 而真正的數字還在回測的正常回撤範圍內。**報錯的數字比沒有數字更危險。**
+//
+// ⚠️ 這仍然是一個模型,不是你券商帳戶的真實報酬:
+//    它假設每一筆都剛好押 1/6、而且當時滿倉。App 從來沒有記過實際股數或資金
+//    (buy() 的 shares 永遠是預設的 1),所以算不出真正的帳戶報酬。
+//    要真的算,得先讓持倉記錄股數與成本 —— 見 docs/AUDIT-2026-10-13.md。
+// =============================================================
+function navWeight(c) {
+  return (c.fraction ?? 1) * c.pnlPct / DAILY_POS;
+}
 
 export class Portfolio {
   constructor() {
@@ -102,8 +141,7 @@ export class Portfolio {
     let nav = 100;
     const wins = [], losses = [];
     log.forEach((c, idx) => {
-      const frac = c.fraction ?? 1;              // 部分出場只按賣掉的比例計入
-      nav *= (1 + frac * c.pnlPct);
+      nav *= (1 + navWeight(c));
       equity.push({ i: idx + 1, nav, symbol: c.symbol, pnlPct: c.pnlPct });
       // 打平(pnlPct === 0)算輸不算贏 —— 沒賺就不是贏。
       // stats() 用同一個判準,兩個分頁的勝率才會一致。
@@ -140,12 +178,18 @@ export class Portfolio {
 
   // 未實現損益統計 + 已實現報酬
   //
-  // ⚠️ 已實現報酬必須用「賣掉的比例」加權,而且要複利 —— 跟 perf() 同一套算法。
-  //    舊版是把每筆 pnlPct 直接相加,忽略 fraction。因為階梯停利預設是開的
-  //    (+30% 減碼 1/3、+60% 再減 1/3),一筆走完階梯的交易會被重複計算 2~3 次、
-  //    每次都用全額權重,結果嚴重高估。
-  //    例:+40% 減碼 33%、剩下 +10% 出場 -> 舊版顯示 50.0%,實際只有 20.8%。
-  //    今日分頁和績效分頁從此顯示同一個數字。
+  // ⚠️ 已實現報酬要用「賣掉的比例 × 部位權重」加權,而且要複利 —— 跟 perf() 共用
+  //    navWeight()。兩次修正疊在一起:
+  //    (1) 舊版把每筆 pnlPct 直接相加,忽略 fraction。階梯停利預設是開的,
+  //        一筆走完階梯的交易會被重複計算 2~3 次、每次都用全額權重。
+  //        例:+40% 減碼 33%、剩下 +10% 出場 -> 顯示 50.0%,實際 20.8%。
+  //    (2) 2026-10-13:加了 fraction 之後仍然把每筆當成「整個帳戶」在複利,
+  //        忘了除以倉位數 DAILY_POS。詳見 navWeight() 上面的註解 —— 這個錯讓
+  //        −6.0% 顯示成 −31.9%。
+  //    今日分頁和績效分頁共用同一條公式,兩邊永遠一致。
+  //
+  // ⚠️ unrealAvgPct 是「每個部位的平均報酬」,不是帳戶報酬。滿倉(6/6)時兩者
+  //    剛好相等;只持有 3 檔時,另外一半是現金,帳戶的未實現影響只有這個數字的一半。
   stats() {
     let unreal = 0;
     for (const p of this.positions) {
@@ -154,7 +198,7 @@ export class Portfolio {
     let nav = 1;
     let wins = 0;
     for (const c of this.cashLog) {
-      nav *= (1 + (c.fraction ?? 1) * c.pnlPct);
+      nav *= (1 + navWeight(c));
       if (c.pnlPct > 0) wins++;                  // 打平算輸,與 perf() 一致
     }
     return {

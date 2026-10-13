@@ -497,6 +497,87 @@ async function checkTradingCosts() {
 }
 
 // =============================================================
+// 10. 已實現報酬的部位權重(行為測試)
+// -------------------------------------------------------------
+// 治的病是一個真的發生過、而且後果很嚴重的錯:
+//   perf() / stats() 用 `nav *= (1 + fraction * pnlPct)` 複利,
+//   fraction 是「這個部位賣掉幾成」,不是「這個部位佔帳戶幾成」,
+//   所以一筆 −6.5% 的全出場被當成整個帳戶 −6.5%。
+//   使用者 5 筆停損(−6.5 / −6.1 / −7.9 / −9.5 / −6.9%)在畫面上顯示成
+//   **已實現報酬 −31.9%**,實際是 **−6.0%** —— 放大 5.3 倍。
+//
+// 為什麼要有哨兵:這個數字沒有任何地方會「報錯」。它只是錯,而且錯得很合理,
+// 看起來就像策略真的在虧。**報錯的數字比沒有數字更危險** ——
+// 它會讓人根據假訊號關掉一個其實還在正常回撤範圍內的策略。
+//
+// 附反向測試:同一組資料用舊公式必須算出明顯不同的值,否則這個測試是空殼。
+// =============================================================
+async function checkRealizedWeighting() {
+  let Portfolio, MAX_POSITIONS, N;
+  try {
+    ({ Portfolio } = await import(pathToFileURL(rel('js', 'portfolio.js')).href));
+    ({ MAX_POSITIONS } = await import(pathToFileURL(rel('js', 'strategy.js')).href));
+    // 權重分母要跟 portfolio.js 用同一個來源(現行 preset 的 maxPositions),
+    // 不是 strategy.js 的常數 —— 否則換 preset 之後測試會因為「剛好都是 6」而假通過。
+    const { PRESETS } = await import(pathToFileURL(rel('js', 'presets.js')).href);
+    const { config } = await import(pathToFileURL(rel('js', 'config.js')).href);
+    N = (PRESETS[config.DAILY_PRESET] || PRESETS.composite).params.maxPositions ?? MAX_POSITIONS;
+  } catch (e) {
+    skip('已實現報酬權重', '模組載不進來,略過(原因看「語法檢查」/「Import 圖完整性」)');
+    return;
+  }
+  // Portfolio 的 load()/save() 都包了 try/catch,Node 沒有 localStorage 也能跑;
+  // 但 save() 會 console.warn,補一個最小的 stub 讓輸出乾淨。
+  if (typeof globalThis.localStorage === 'undefined') {
+    const m = new Map();
+    globalThis.localStorage = { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) };
+  }
+
+  const problems = [];
+  const LOSSES = [-0.0649, -0.0609, -0.0788, -0.0954, -0.0692];
+  const pf = new Portfolio();
+  pf.positions = [];
+  pf.cashLog = LOSSES.map((p, i) => ({ symbol: `T${i}`, pnlPct: p, fraction: 1, entryDate: '2026-08-18', exitDate: '2026-09-01', reason: '觸及停損' }));
+
+  // 期望值:每筆佔 1/6,複利
+  let want = 1; for (const p of LOSSES) want *= (1 + p / N);
+  want -= 1;
+  // 舊的錯誤公式(反向測試用)
+  let wrong = 1; for (const p of LOSSES) wrong *= (1 + p);
+  wrong -= 1;
+
+  const got = pf.stats().realizedPct;
+  if (Math.abs(got - want) > 1e-12) {
+    problems.push(`stats().realizedPct = ${(got * 100).toFixed(2)}%,應為 ${(want * 100).toFixed(2)}%` +
+      `(每筆佔 1/${N})。舊的全額權重公式會給出 ${(wrong * 100).toFixed(2)}%。`);
+  }
+  // 反向測試:確認這組資料真的分得出兩種算法(否則上面的斷言是空殼)
+  if (Math.abs(want - wrong) < 0.05) {
+    problems.push(`測試資料失效:正確值 ${(want * 100).toFixed(2)}% 與錯誤值 ${(wrong * 100).toFixed(2)}% 太接近,分不出來`);
+  }
+
+  // 兩個分頁必須顯示同一個數字
+  const pr = pf.perf().totalReturn;
+  if (Math.abs(pr - got) > 1e-12) {
+    problems.push(`perf().totalReturn (${(pr * 100).toFixed(2)}%) 與 stats().realizedPct (${(got * 100).toFixed(2)}%) 不一致 —— 今日分頁和績效分頁會顯示兩個不同的已實現報酬`);
+  }
+
+  // 階梯部分出場:fraction 與部位權重必須同時生效
+  const pf2 = new Portfolio();
+  pf2.positions = [];
+  pf2.cashLog = [{ symbol: 'L', pnlPct: 0.40, fraction: 0.33, entryDate: '2026-01-01', exitDate: '2026-02-01', reason: '階梯停利 +30%' }];
+  const wantLadder = 0.33 * 0.40 / N;
+  if (Math.abs(pf2.stats().realizedPct - wantLadder) > 1e-12) {
+    problems.push(`階梯部分出場算錯:得到 ${(pf2.stats().realizedPct * 100).toFixed(3)}%,應為 ${(wantLadder * 100).toFixed(3)}%` +
+      `(賣掉 33% × 部位權重 1/${N} × 獲利 40%)`);
+  }
+
+  if (problems.length) { fail('已實現報酬權重', problems.join('\n    ')); return; }
+  ok('已實現報酬權重',
+    `5 筆全額停損 -> ${(want * 100).toFixed(2)}%(全額權重的舊公式會是 ${(wrong * 100).toFixed(2)}%);階梯部分出場與兩分頁一致`);
+}
+
+// =============================================================
 // 主流程
 // =============================================================
 console.log('\n  SignalDesk 架構驗證\n  ' + '─'.repeat(56));
@@ -510,6 +591,7 @@ await checkConfigKeys();
 checkNoDuplicateConfig();
 checkNoSecrets();
 await checkTradingCosts();
+await checkRealizedWeighting();
 
 console.log('');
 for (const r of results) {

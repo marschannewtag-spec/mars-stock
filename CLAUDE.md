@@ -92,8 +92,8 @@
 
 | 工具 | 何時跑 | 管什麼 |
 |---|---|---|
-| `scripts/verify.mjs` | 本機隨時 / CI 每次 push | 9 項架構驗證 |
-| `scripts/verify-selftest.mjs` | CI 每次 push | 驗證上面那 9 項自己還有沒有效 |
+| `scripts/verify.mjs` | 本機隨時 / CI 每次 push | 10 項架構驗證 |
+| `scripts/verify-selftest.mjs` | CI 每次 push | 驗證上面那 10 項自己還有沒有效 |
 | `scripts/check-deploy.mjs` | Pages 部署完成後 | 線上檔案真的等於 repo |
 | `scripts/check-worker.mjs` | 每週一自動 | 三個外部資料源的端點與回傳格式 |
 | `docs/ANNUAL-HEALTH-CHECK.md` | 一年一次(人工) | CI 看不到的那些事 |

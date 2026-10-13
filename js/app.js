@@ -127,6 +127,12 @@ function renderToday() {
         <div class="metric"><span class="metric-label">已實現報酬</span>
           <span class="metric-val mono ${cls(s.realizedPct)}">${pct(s.realizedPct)}</span></div>
       </div>
+      <p class="hint" style="margin:8px 2px 0">
+        兩個數字都是<strong>模型值</strong>,不是你券商帳戶的真實報酬 ——
+        App 沒有記錄實際股數與資金,算不出真的。
+        <br>「未實現均報酬」= 各持倉報酬的平均(滿倉 ${DAILY_MAX}/${DAILY_MAX} 時才等於帳戶報酬)。
+        「已實現報酬」= 每筆平倉<strong>按 1/${DAILY_MAX} 部位權重</strong>複利。
+      </p>
     </section>
 
     ${marketBanner()}

@@ -166,6 +166,16 @@ const cases = [
       'const costBasis = openP;'),
     restore: restoreGit('js/backtest-real.js'),
   },
+  {
+    // 把部位權重拿掉,回到 2026-10-13 之前那個把每筆平倉當成「整個帳戶」的算法。
+    // 這個錯不會報錯、不會壞掉,只會讓 −6.0% 顯示成 −31.9%,看起來就像策略在虧。
+    name: '已實現報酬漏掉部位權重',
+    expect: '已實現報酬權重',
+    break: () => patch('js/portfolio.js',
+      'return (c.fraction ?? 1) * c.pnlPct / DAILY_POS;',
+      'return (c.fraction ?? 1) * c.pnlPct;'),
+    restore: restoreGit('js/portfolio.js'),
+  },
 ];
 
 // =============================================================
