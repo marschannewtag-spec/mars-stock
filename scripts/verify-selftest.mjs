@@ -218,6 +218,52 @@ const cases = [
       'return { available, blocked: available && !state.market.riskOn };'),
     restore: restoreGit('js/app.js'),
   },
+  {
+    // buy() 不再記下進場權重 —— 退回「平倉當下才讀現行設定」的舊行為。
+    // 症狀:3 倉 preset 買進、持有期間換成 6 倉,這筆的歷史報酬變成一半。
+    name: '買進沒記下部位權重',
+    expect: '已實現報酬權重',
+    break: () => patch('js/portfolio.js', 'posWeight: 1 / DAILY_POS,', ''),
+    restore: restoreGit('js/portfolio.js'),
+  },
+  {
+    // 平倉不沿用持倉記下的權重,改成一律用現行設定重算。
+    name: '平倉不沿用進場權重',
+    expect: '已實現報酬權重',
+    break: () => patch('js/portfolio.js',
+      'const posWeight = weightKnown ? pos.posWeight : (1 / DAILY_POS);',
+      'const posWeight = 1 / DAILY_POS;'),
+    restore: restoreGit('js/portfolio.js'),
+  },
+  {
+    // 估算值被冒充成歷史實際值 —— 畫面會宣稱權重是當時記下的。
+    name: '估算權重沒被標記',
+    expect: '已實現報酬權重',
+    break: () => patch('js/portfolio.js',
+      'posWeight, posWeightEstimated: !weightKnown,',
+      'posWeight, posWeightEstimated: false,'),
+    restore: restoreGit('js/portfolio.js'),
+  },
+  {
+    // 拿掉 fraction 的入口驗證,退回只靠 Math.min() 的狀態。
+    // 負數會讓部位反而變大,NaN 會把整條資金曲線汙染成 NaN。
+    name: '賣出比例沒做入口驗證',
+    expect: '已實現報酬權重',
+    break: () => patch('js/portfolio.js',
+      "if (!Number.isFinite(fraction) || fraction <= 0) return bad('賣出比例', fraction);",
+      ''),
+    restore: restoreGit('js/portfolio.js'),
+  },
+  {
+    // 拿掉 pos.size 的入口驗證。真實入口是 localStorage 被汙染 ——
+    // `pos.size ?? 1` 的 `??` 只擋 null/undefined,擋不住 NaN 與負數。
+    name: '持倉比例沒做入口驗證',
+    expect: '已實現報酬權重',
+    break: () => patch('js/portfolio.js',
+      "if (!Number.isFinite(size) || size <= 0) return bad('持倉剩餘比例', pos.size);",
+      ''),
+    restore: restoreGit('js/portfolio.js'),
+  },
 ];
 
 // =============================================================

@@ -46,10 +46,15 @@ const STORAGE_KEY = 'usstock_portfolio_v1';
 //    App 從來沒有記過實際股數或資金(buy() 的 shares 永遠是預設的 1),
 //    所以算不出真正的帳戶報酬。要真的算,得先讓持倉記錄股數與成本。
 //
-// ⚠️ 權重必須在**平倉當下**就記進 cashLog(posWeight),不能事後讀現行設定 ——
-//    否則把 config.DAILY_PRESET 從 marcus(3 倉)換成 composite(6 倉)之後,
-//    過去那些交易的歷史報酬會憑空被改寫成一半,即使交易本身一個字都沒變。
-//    舊紀錄沒有 posWeight,只能退回用現行值估 —— 那是沒辦法中的辦法,不是正確值。
+// ⚠️ 權重必須在**買進當下**就記在持倉上(posWeight),平倉時直接複製進 cashLog。
+//    2026-10-14 修正:原本是在平倉時才寫 `1 / DAILY_POS`,那仍然是錯的 ——
+//    權重是「配置」時決定的,不是「出場」時決定的。3 倉 preset 買進、持有期間
+//    換成 6 倉,平倉就會被記成 1/6,而正確答案是 1/3。
+//    (寫在平倉已經擋住「換 preset 改寫全部歷史」,但擋不住「換 preset 改寫
+//     那些跨越切換點的部位」。要擋住就只能記在進場。)
+//    買進前就存在的舊持倉、以及 2026-10-14 之前的舊 cashLog 都沒有 posWeight,
+//    只能退回用現行值估 —— 那些紀錄會帶 posWeightEstimated: true。
+//    **估算值不冒充歷史實際值**:畫面要照實說有幾筆是估的。
 //
 // ⚠️ 已知的剩餘誤差:這裡是「逐筆平倉事件複利」,不是真正的投資組合報酬。
 //    多檔同時持有時,它們不是依序發生、每段都能把整個帳戶再投入的獨立期間。
@@ -59,9 +64,16 @@ const STORAGE_KEY = 'usstock_portfolio_v1';
 //    以目前的資料量級,兩種算法差 0.15 個百分點(−6.00% vs 逐筆相加 −6.15%),
 //    不影響結論;但部位變大、報酬變大時誤差會放大。詳見 docs/AUDIT-2026-10-13.md。
 // =============================================================
+const validWeight = (w) => typeof w === 'number' && Number.isFinite(w) && w > 0;
+
+// 這筆平倉的權重是「當下記下的」還是「事後估的」。
+// 兩種來源都算估:(a) 明確標了 posWeightEstimated,(b) 根本沒有 posWeight 欄位
+// (2026-10-14 之前的紀錄)。缺欄位不能當成「剛好等於現行設定」。
+const weightIsEstimated = (c) => c.posWeightEstimated === true || !validWeight(c.posWeight);
+
 function navWeight(c) {
   // posWeight = 這筆平倉的部位當時佔帳戶的比例(1/N)。
-  const w = (typeof c.posWeight === 'number' && c.posWeight > 0) ? c.posWeight : (1 / DAILY_POS);
+  const w = validWeight(c.posWeight) ? c.posWeight : (1 / DAILY_POS);
   return (c.fraction ?? 1) * c.pnlPct * w;
 }
 
@@ -102,6 +114,9 @@ export class Portfolio {
       symbol, name, etf, shares,
       entryPrice: price, peakPrice: price,
       stopPrice, atr,                                  // 進場時鎖定的 ATR 停損價
+      // 這個部位進場當下佔帳戶的比例。記在**買進**,平倉時直接複製 ——
+      // 權重是配置時決定的,不是出場時決定的。見 navWeight() 上面的註解。
+      posWeight: 1 / DAILY_POS,
       size: 1, laddersFired: [],                       // 分批停利:剩餘比例 + 已觸發的階
       entryEnv,                                         // 進場時的市場環境戳記(Minervini 心法)
       manual,                                           // true = 你自己在外面買的,非系統訊號
@@ -117,9 +132,31 @@ export class Portfolio {
     const i = this.positions.findIndex((p) => p.symbol === symbol);
     if (i < 0) return { ok: false, msg: '未持有' };
     const pos = this.positions[i];
+
+    // ---- 入口驗證。Math.min() 擋不住負數與 NaN ----
+    //   Math.min(-0.5, 1) = -0.5  -> pos.size = 1 - (-0.5) = 1.5,部位反而**變大**
+    //   Math.min(NaN, 1)  = NaN   -> 部位與 cashLog 一起被汙染,之後每個統計都是 NaN
+    // 現行呼叫端(app.js 的賣出訊號)傳的都是 preset 裡的正數,從那裡進不來。
+    // 真正的入口是 localStorage 被汙染 —— `pos.size ?? 1` 的 `??` 只擋
+    // null/undefined,擋不住 NaN、負數、字串。壞資料必須在這裡止步:
+    // 一旦寫進 cashLog 就再也分不出哪筆是壞的,而 cashLog 是不可逆的紀錄。
     const size = pos.size ?? 1;
+    const bad = (label, v) =>
+      ({ ok: false, msg: `${symbol} ${label}不合法(${String(v)})—— 已拒絕,持倉與紀錄都沒有變動` });
+    if (!Number.isFinite(size) || size <= 0) return bad('持倉剩餘比例', pos.size);
+    if (!Number.isFinite(fraction) || fraction <= 0) return bad('賣出比例', fraction);
+    // 價格不在授權清單裡,但是同一類的洞:NaN 價格會讓 pnlPct 變 NaN,
+    // 然後整條資金曲線都是 NaN,而且不會有任何錯誤訊息。
+    if (!Number.isFinite(price) || price <= 0) return bad('賣出價格', price);
+    if (!Number.isFinite(pos.entryPrice) || pos.entryPrice <= 0) return bad('持倉進場價', pos.entryPrice);
+
     const sellSize = Math.min(fraction, size);
     const pnlPct = (price - pos.entryPrice) / pos.entryPrice;
+
+    // 權重取自持倉(買進當下寫死)。舊持倉沒有 -> 只能用現行設定估,
+    // 並標記起來。估算值不冒充歷史實際值。
+    const weightKnown = validWeight(pos.posWeight);
+    const posWeight = weightKnown ? pos.posWeight : (1 / DAILY_POS);
     const exitDate = new Date().toISOString().slice(0, 10);
     const holdingDays = Math.max(0, Math.round((new Date(exitDate) - new Date(pos.entryDate)) / 86400000));
     const partial = sellSize < size - 1e-9;
@@ -127,9 +164,9 @@ export class Portfolio {
     this.cashLog.push({
       symbol, name: pos.name, entryPrice: pos.entryPrice, exitPrice: price, pnlPct,
       fraction: sellSize, partial,
-      // 這個部位當時佔帳戶的比例。一定要在平倉當下寫死 —— 事後讀現行 preset 的話,
-      // 換一次 DAILY_PRESET 就會把所有歷史交易的報酬重算成別的數字。
-      posWeight: 1 / DAILY_POS,
+      // 這個部位進場當下佔帳戶的比例,從持倉複製過來。
+      // posWeightEstimated = 這筆的權重是事後用現行設定估的,不是當時記下的。
+      posWeight, posWeightEstimated: !weightKnown,
       entryEnv: pos.entryEnv ?? null, exitEnv,         // 市場環境戳記(進場/出場)
       // manual 一定要跟著平倉紀錄走。以前只存在持倉上,部位一平就消失,
       // 事後就再也分不出「系統訊號買的」還是「自己覆蓋買的」——
@@ -176,6 +213,7 @@ export class Portfolio {
     equity.forEach((e) => { peak = Math.max(peak, e.nav); maxDD = Math.min(maxDD, e.nav / peak - 1); });
     return {
       trades, equity, totalReturn,
+      estimatedWeights: log.filter(weightIsEstimated).length,
       winRate: wins.length / trades,
       avgWin, avgLoss,
       payoff: avgLoss !== 0 ? Math.abs(avgWin / avgLoss) : 0,
@@ -227,6 +265,8 @@ export class Portfolio {
       realizedPct: nav - 1,
       trades: this.cashLog.length,
       winRate: this.cashLog.length ? wins / this.cashLog.length : 0,
+      // 有幾筆的部位權重是事後估的,不是當時記下的。畫面要照實說。
+      estimatedWeights: this.cashLog.filter(weightIsEstimated).length,
     };
   }
 

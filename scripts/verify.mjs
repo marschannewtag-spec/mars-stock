@@ -595,9 +595,140 @@ async function checkRealizedWeighting() {
     problems.push('sellPartial 沒有把 posWeight 寫進 cashLog —— 之後換 preset 會改寫歷史');
   }
 
+
+  // =============================================================
+  // 2026-10-14 Phase 2:權重記在買進、以及入口驗證
+  // =============================================================
+
+  // (1) buy() 必須把進場當下的權重記在持倉上
+  const pf5 = new Portfolio();
+  pf5.positions = []; pf5.cashLog = [];
+  pf5.buy({ symbol: 'NEW', name: 'NEW', etf: null, price: 50, stopPrice: 45, atr: 2 });
+  const newPos = pf5.positions[0];
+  if (!newPos) {
+    problems.push('buy() 沒有建立持倉,後面的權重測試無從進行');
+  } else if (!(typeof newPos.posWeight === 'number' && Math.abs(newPos.posWeight - 1 / N) < 1e-15)) {
+    problems.push(`buy() 沒把進場權重記在持倉上:posWeight = ${newPos.posWeight},應為 1/${N}`);
+  }
+
+  // (2) 權重必須沿用**持倉**記下的值,不是平倉當下的現行 preset。
+  //     模擬「3 倉 preset 買進 -> 持有期間換成 6 倉 -> 平倉」。
+  const pf6 = new Portfolio();
+  pf6.positions = [{ symbol: 'X', name: 'X', entryPrice: 100, peakPrice: 100, size: 1,
+                     laddersFired: [], entryDate: '2026-01-01', posWeight: 1 / 3 }];
+  pf6.cashLog = [];
+  pf6.sellPartial('X', 88, 1, '觸及停損');
+  const c6 = pf6.cashLog[0];
+  if (!c6) problems.push('sellPartial 沒有寫出平倉紀錄');
+  else {
+    if (Math.abs(c6.posWeight - 1 / 3) > 1e-15) {
+      problems.push(`平倉沒有沿用持倉的 posWeight:記成 ${c6.posWeight},應為 ${1 / 3}` +
+        `(進場時是 3 倉,平倉時 preset 已換成 ${N} 倉也不該改寫)`);
+    }
+    if (c6.posWeightEstimated !== false) {
+      problems.push('持倉有 posWeight,平倉卻標成估算值 —— 實際值被降級成推算值');
+    }
+    if (Math.abs(pf6.stats().realizedPct - (-0.12 / 3)) > 1e-12) {
+      problems.push(`沿用權重後的已實現報酬算錯:${(pf6.stats().realizedPct * 100).toFixed(3)}%,應為 ${((-0.12 / 3) * 100).toFixed(3)}%`);
+    }
+    if (pf6.stats().estimatedWeights !== 0) problems.push('estimatedWeights 應為 0(這筆的權重是當時記下的)');
+  }
+
+  // (3) 舊持倉沒有 posWeight -> 可以用現行值估,但**必須標記**。
+  //     「默默宣稱歷史已被精確還原」比承認估算更糟。
+  const pf7 = new Portfolio();
+  pf7.positions = [{ symbol: 'OLD', name: 'OLD', entryPrice: 100, peakPrice: 100, size: 1,
+                     laddersFired: [], entryDate: '2026-01-01' }];   // 沒有 posWeight
+  pf7.cashLog = [];
+  pf7.sellPartial('OLD', 90, 1, '觸及停損');
+  const c7 = pf7.cashLog[0];
+  if (!c7) problems.push('舊持倉平倉沒有寫出紀錄');
+  else {
+    if (Math.abs(c7.posWeight - 1 / N) > 1e-15) problems.push(`舊持倉的 fallback 權重應為 1/${N},實際 ${c7.posWeight}`);
+    if (c7.posWeightEstimated !== true) {
+      problems.push('舊持倉沒有 posWeight,平倉紀錄卻沒標 posWeightEstimated —— 估算值被冒充成歷史實際值');
+    }
+    if (pf7.stats().estimatedWeights !== 1) problems.push(`estimatedWeights 應為 1,實際 ${pf7.stats().estimatedWeights}`);
+    if (pf7.perf().estimatedWeights !== 1) problems.push('perf() 沒有回報估算筆數 —— 績效分頁無法照實說');
+  }
+
+  // (3b) 2026-10-14 之前的舊 cashLog 連欄位都沒有,也要算估算
+  const pf8 = new Portfolio();
+  pf8.positions = []; pf8.cashLog = [{ symbol: 'A', pnlPct: -0.1, fraction: 1 }];
+  if (pf8.stats().estimatedWeights !== 1) {
+    problems.push('cashLog 完全沒有 posWeight 欄位時,estimatedWeights 應算 1 —— 缺欄位不能當成「剛好等於現行設定」');
+  }
+
+  // (4) 入口驗證:不合法的輸入一律拒絕,且持倉、cashLog 都不得變動
+  const BAD_FRACTION = [-0.5, 0, NaN, Infinity, -Infinity, '0.5', null, {}, []];
+  for (const bad of BAD_FRACTION) {
+    const pf = new Portfolio();
+    pf.positions = [{ symbol: 'V', name: 'V', entryPrice: 100, peakPrice: 100, size: 1,
+                      laddersFired: [], entryDate: '2026-01-01', posWeight: 1 / N }];
+    pf.cashLog = [];
+    const r = pf.sellPartial('V', 110, bad, 't');
+    const label = typeof bad === 'object' && bad !== null ? JSON.stringify(bad) : String(bad);
+    if (r.ok) problems.push(`sellPartial 接受了不合法的 fraction(${label})`);
+    if (pf.cashLog.length !== 0) problems.push(`fraction=${label} 被拒絕後仍寫了 cashLog —— 壞資料進了不可逆的紀錄`);
+    if (pf.positions.length !== 1 || pf.positions[0].size !== 1) {
+      problems.push(`fraction=${label} 被拒絕後持倉仍被改動(size = ${pf.positions[0] && pf.positions[0].size})`);
+    }
+  }
+  // fraction 省略 = 全平,這是 sell() 走的路,必須放行
+  const pf9 = new Portfolio();
+  pf9.positions = [{ symbol: 'W', name: 'W', entryPrice: 100, peakPrice: 100, size: 1,
+                     laddersFired: [], entryDate: '2026-01-01', posWeight: 1 / N }];
+  pf9.cashLog = [];
+  if (!pf9.sell('W', 110, 't').ok) problems.push('sell()(fraction 省略)被誤擋 —— 預設值 1 應該合法');
+
+  // 持倉本身被汙染:pos.size 是 NaN / 負數 / 字串 -> 拒絕
+  for (const badSize of [NaN, -0.5, 0, '1', Infinity]) {
+    const pf = new Portfolio();
+    pf.positions = [{ symbol: 'C', name: 'C', entryPrice: 100, peakPrice: 100, size: badSize,
+                      laddersFired: [], entryDate: '2026-01-01', posWeight: 1 / N }];
+    pf.cashLog = [];
+    if (pf.sellPartial('C', 110, 1, 't').ok) problems.push(`sellPartial 接受了被汙染的 pos.size(${String(badSize)})`);
+    if (pf.cashLog.length !== 0) problems.push(`pos.size=${String(badSize)} 被拒絕後仍寫了 cashLog`);
+  }
+  // 價格同樣會汙染 pnlPct
+  for (const badPx of [NaN, 0, -10, Infinity]) {
+    const pf = new Portfolio();
+    pf.positions = [{ symbol: 'D', name: 'D', entryPrice: 100, peakPrice: 100, size: 1,
+                      laddersFired: [], entryDate: '2026-01-01', posWeight: 1 / N }];
+    pf.cashLog = [];
+    if (pf.sellPartial('D', badPx, 1, 't').ok) problems.push(`sellPartial 接受了不合法的賣出價(${String(badPx)})`);
+    if (pf.cashLog.length !== 0) problems.push(`賣出價=${String(badPx)} 被拒絕後仍寫了 cashLog`);
+  }
+
+  // (5) 連續分批減碼:合計恰好 100%,每筆只按實際賣出的原始比例計入,
+  //     不得因為減碼三次就把整個部位的權重算三遍
+  const pf10 = new Portfolio();
+  pf10.positions = [{ symbol: 'LAD', name: 'LAD', entryPrice: 100, peakPrice: 100, size: 1,
+                      laddersFired: [], entryDate: '2026-01-01', posWeight: 1 / N }];
+  pf10.cashLog = [];
+  pf10.sellPartial('LAD', 130, 0.33, '階梯 1', 0);
+  pf10.sellPartial('LAD', 140, 0.40, '階梯 2', 1);
+  pf10.sellPartial('LAD', 120, 1, '移動停利');          // 只剩 0.27
+  const ladSum = pf10.cashLog.reduce((a, c) => a + c.fraction, 0);
+  if (Math.abs(ladSum - 1) > 1e-9) problems.push(`連續減碼合計賣出 ${(ladSum * 100).toFixed(2)}%,應恰好 100%`);
+  if (pf10.positions.length !== 0) problems.push('連續減碼到 100% 之後持倉沒有被移除');
+  if (!pf10.cashLog.every((c) => Math.abs(c.posWeight - 1 / N) < 1e-15 && c.posWeightEstimated === false)) {
+    problems.push('連續減碼的三筆紀錄沒有共用同一個進場權重');
+  }
+  // 反向:漏掉 fraction 的話報酬會明顯不同 —— 確認這組資料分得出來
+  const ladGot = pf10.stats().realizedPct;
+  let ladWrong = 1;
+  for (const c of pf10.cashLog) ladWrong *= (1 + c.pnlPct * (1 / N));
+  ladWrong -= 1;
+  if (Math.abs(ladGot - ladWrong) < 0.01) {
+    problems.push(`連續減碼測試資料失效:正確值 ${(ladGot * 100).toFixed(3)}% 與漏掉 fraction 的值 ${(ladWrong * 100).toFixed(3)}% 太接近`);
+  }
+
   if (problems.length) { fail('已實現報酬權重', problems.join('\n    ')); return; }
   ok('已實現報酬權重',
-    `5 筆全額停損 -> ${(want * 100).toFixed(2)}%(全額權重的舊公式會是 ${(wrong * 100).toFixed(2)}%);階梯部分出場與兩分頁一致`);
+    `5 筆全額停損 -> ${(want * 100).toFixed(2)}%(全額權重的舊公式會是 ${(wrong * 100).toFixed(2)}%);階梯與兩分頁一致` +
+    `；權重記於進場並沿用至平倉，舊紀錄標成估算值` +
+    `；${BAD_FRACTION.length + 9} 組不合法輸入全數被拒且未寫入紀錄`);
 }
 
 // =============================================================

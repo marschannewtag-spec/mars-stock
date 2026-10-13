@@ -153,7 +153,11 @@ function renderToday() {
         兩個數字都是<strong>模型值</strong>,不是你券商帳戶的真實報酬 ——
         App 沒有記錄實際股數與資金,算不出真的。
         <br>「未實現均報酬」= 各持倉報酬的平均(滿倉 ${DAILY_MAX}/${DAILY_MAX} 時才等於帳戶報酬)。
-        「已實現報酬」= 每筆平倉<strong>按 1/${DAILY_MAX} 部位權重</strong>複利。
+        「已實現報酬」= 每筆平倉<strong>按該部位進場當下的權重</strong>複利。${
+          s.estimatedWeights ? `
+        <br>⚠️ 其中 <strong>${s.estimatedWeights}/${s.trades}</strong> 筆的部位權重是
+        <strong>事後用現行設定估的</strong>(2026-10-14 之前的紀錄沒有存權重),不是當時記下的實際值。`
+        : ''}
       </p>
     </section>
 
@@ -511,7 +515,11 @@ function renderPerf() {
       中間的時間、以及當時未平倉部位的浮動,在這條曲線上都不存在。
       它量的是「已平倉事件依序複利後最深的一段凹陷」,不是你帳戶在時間軸上的回撤。
       要算真正的帳戶回撤必須有<strong>每日 NAV</strong>,而 App 只在你打開它的那幾天看得到價格。
-      <br>「回測」分頁的「最大回撤」是從每日曲線算的,<strong>那個才是回撤</strong>,兩者不能互相引用。
+      <br>「回測」分頁的「最大回撤」是從每日曲線算的,<strong>那個才是回撤</strong>,兩者不能互相引用。${
+        p.estimatedWeights ? `
+      <br>⚠️ 另外,上面 ${p.trades} 筆裡有 <strong>${p.estimatedWeights}</strong> 筆的部位權重是
+      <strong>事後用現行設定估的</strong> —— 那些紀錄建立時還沒有存權重這個欄位,
+      所以它們的報酬貢獻是推算值,不是還原出來的歷史實際值。` : ''}
     </p>
     ${s.open > 0 ? `<p class="hint" style="margin-top:8px">另有 ${s.open} 筆未平倉,未實現均報酬 ${pct(s.unrealAvgPct)}(不計入上方曲線)。</p>` : ''}
 
