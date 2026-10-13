@@ -572,6 +572,29 @@ async function checkRealizedWeighting() {
       `(賣掉 33% × 部位權重 1/${N} × 獲利 40%)`);
   }
 
+  // posWeight 必須以**平倉當下**記下的值為準,不能事後被現行 preset 改寫。
+  // 否則把 config.DAILY_PRESET 從 marcus(3 倉)換成 composite(6 倉)之後,
+  // 所有歷史交易的報酬都會憑空變成一半,即使交易本身一個字都沒變。
+  const pf3 = new Portfolio();
+  pf3.positions = [];
+  pf3.cashLog = [{ symbol: 'H', pnlPct: -0.12, fraction: 1, posWeight: 1 / 3, entryDate: '2026-01-01', exitDate: '2026-02-01', reason: '觸及停損' }];
+  if (Math.abs(pf3.stats().realizedPct - (-0.12 / 3)) > 1e-12) {
+    problems.push(`cashLog 的 posWeight 被忽略了:得到 ${(pf3.stats().realizedPct * 100).toFixed(3)}%,` +
+      `應為 ${((-0.12 / 3) * 100).toFixed(3)}%(該筆記的是 1/3 倉位,不是現行的 1/${N})`);
+  }
+
+  // 部分出場合計不得超過原部位 100%(sellPartial 用 Math.min 夾住,這裡把那個保證釘住)
+  const pf4 = new Portfolio();
+  pf4.positions = [{ symbol: 'P', name: 'P', entryPrice: 100, peakPrice: 100, size: 1, laddersFired: [], entryDate: '2026-01-01' }];
+  pf4.cashLog = [];
+  pf4.sellPartial('P', 110, 0.5, 't');
+  pf4.sellPartial('P', 110, 0.9, 't');   // 只剩 0.5,要求 0.9 -> 最多只能賣 0.5
+  const sold = pf4.cashLog.reduce((a, c) => a + (c.fraction ?? 1), 0);
+  if (sold > 1 + 1e-9) problems.push(`部分出場合計賣掉原部位的 ${(sold * 100).toFixed(1)}%,超過 100%`);
+  if (!pf4.cashLog.every((c) => typeof c.posWeight === 'number' && c.posWeight > 0)) {
+    problems.push('sellPartial 沒有把 posWeight 寫進 cashLog —— 之後換 preset 會改寫歷史');
+  }
+
   if (problems.length) { fail('已實現報酬權重', problems.join('\n    ')); return; }
   ok('已實現報酬權重',
     `5 筆全額停損 -> ${(want * 100).toFixed(2)}%(全額權重的舊公式會是 ${(wrong * 100).toFixed(2)}%);階梯部分出場與兩分頁一致`);

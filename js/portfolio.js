@@ -40,12 +40,29 @@ const STORAGE_KEY = 'usstock_portfolio_v1';
 // 而真正的數字還在回測的正常回撤範圍內。**報錯的數字比沒有數字更危險。**
 //
 // ⚠️ 這仍然是一個模型,不是你券商帳戶的真實報酬:
-//    它假設每一筆都剛好押 1/6、而且當時滿倉。App 從來沒有記過實際股數或資金
-//    (buy() 的 shares 永遠是預設的 1),所以算不出真正的帳戶報酬。
-//    要真的算,得先讓持倉記錄股數與成本 —— 見 docs/AUDIT-2026-10-13.md。
+//    它假設每一筆都剛好押 1/N、而且空出來的倉位是現金(回測的
+//    `alloc = Math.min(nav / maxPos, cash)` 就是這個模型,所以未滿倉時除以 N
+//    並不會偏樂觀 —— 偏樂觀的情況是「把錢重新分配給現有持倉」,而這套策略不那樣做)。
+//    App 從來沒有記過實際股數或資金(buy() 的 shares 永遠是預設的 1),
+//    所以算不出真正的帳戶報酬。要真的算,得先讓持倉記錄股數與成本。
+//
+// ⚠️ 權重必須在**平倉當下**就記進 cashLog(posWeight),不能事後讀現行設定 ——
+//    否則把 config.DAILY_PRESET 從 marcus(3 倉)換成 composite(6 倉)之後,
+//    過去那些交易的歷史報酬會憑空被改寫成一半,即使交易本身一個字都沒變。
+//    舊紀錄沒有 posWeight,只能退回用現行值估 —— 那是沒辦法中的辦法,不是正確值。
+//
+// ⚠️ 已知的剩餘誤差:這裡是「逐筆平倉事件複利」,不是真正的投資組合報酬。
+//    多檔同時持有時,它們不是依序發生、每段都能把整個帳戶再投入的獨立期間。
+//    正確做法是每日把所有持倉與現金標記市值、算出一條每日 NAV 曲線
+//    (backtest-real.js 的 equity 就是那樣做的),但實盤端沒有每日資料 ——
+//    App 只有在你打開它的那幾天才看得到價格。
+//    以目前的資料量級,兩種算法差 0.15 個百分點(−6.00% vs 逐筆相加 −6.15%),
+//    不影響結論;但部位變大、報酬變大時誤差會放大。詳見 docs/AUDIT-2026-10-13.md。
 // =============================================================
 function navWeight(c) {
-  return (c.fraction ?? 1) * c.pnlPct / DAILY_POS;
+  // posWeight = 這筆平倉的部位當時佔帳戶的比例(1/N)。
+  const w = (typeof c.posWeight === 'number' && c.posWeight > 0) ? c.posWeight : (1 / DAILY_POS);
+  return (c.fraction ?? 1) * c.pnlPct * w;
 }
 
 export class Portfolio {
@@ -110,6 +127,9 @@ export class Portfolio {
     this.cashLog.push({
       symbol, name: pos.name, entryPrice: pos.entryPrice, exitPrice: price, pnlPct,
       fraction: sellSize, partial,
+      // 這個部位當時佔帳戶的比例。一定要在平倉當下寫死 —— 事後讀現行 preset 的話,
+      // 換一次 DAILY_PRESET 就會把所有歷史交易的報酬重算成別的數字。
+      posWeight: 1 / DAILY_POS,
       entryEnv: pos.entryEnv ?? null, exitEnv,         // 市場環境戳記(進場/出場)
       // manual 一定要跟著平倉紀錄走。以前只存在持倉上,部位一平就消失,
       // 事後就再也分不出「系統訊號買的」還是「自己覆蓋買的」——
