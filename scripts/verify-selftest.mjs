@@ -181,7 +181,10 @@ const cases = [
     // 症狀是換一次 config.DAILY_PRESET,所有歷史交易的報酬都被改寫。
     name: '平倉沒記下部位權重',
     expect: '已實現報酬權重',
-    break: () => patch('js/portfolio.js', '      posWeight: 1 / DAILY_POS,\n', ''),
+    // 比對字串裡**不要放換行**:前一個案例的 restoreGit 會走 `git checkout --`,
+    // 而這個 repo 的 autocrlf 會把還原後的檔案換成 CRLF,帶 \n 的 pattern 就對不上了
+    // (實際踩過:第一個案例通過、第二個變成「測試已失效」)。
+    break: () => patch('js/portfolio.js', 'posWeight: 1 / DAILY_POS,', 'posWeight: null,'),
     restore: restoreGit('js/portfolio.js'),
   },
 ];
