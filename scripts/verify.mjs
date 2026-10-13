@@ -966,10 +966,58 @@ function checkMonteCarlo() {
     }
   }
 
+
+  // ---- (f) 跨種子區塊的渲染 ----
+  // 這塊 UI 只在「跑完六姿態」之後才會出現,所以手動點不到、也最容易悄悄壞掉。
+  // 餵 2026-10-14 的實測值進去,確認三件事:符號一致的訊息、極差最大的姿態、
+  // 以及三種空資料不會讓整個分頁爆掉(mcResults 為空、paired 為 null、缺 seedSpread)。
+  const fnBlk = grab('seedSpreadBlock');
+  if (!fnBlk) {
+    problems.push('app.js 找不到 seedSpreadBlock() —— 跨種子離散度沒有被顯示出來');
+  } else {
+    const render = (rs) => new Function('mcResults', fnBlk + ' return seedSpreadBlock();')(rs);
+    const mk = (label, mMin, mMax, pMin, pMax) => ({
+      label,
+      paired: {
+        median: (mMin + mMax) / 2, lo: -0.1, hi: 0.9, pAwins: pMax, runs: 5000,
+        seedSpread: {
+          seeds: [1, 2, 3, 4, 5], runsPerSeed: 1000,
+          perSeed: [mMin, mMax, mMin, mMax, mMin].map((m, i) => ({ seed: i + 1, median: m, pAwins: i % 2 ? pMin : pMax, lo: -0.1, hi: 0.9 })),
+          medianMin: mMin, medianMax: mMax, pAwinsMin: pMin, pAwinsMax: pMax,
+          signFlips: !(mMin >= 0 && mMax >= 0) && !(mMin <= 0 && mMax <= 0),
+        },
+      },
+    });
+    // 2026-10-14 實測:六姿態全部符號一致,極差最大的是 Bilaal(60.4~64.1% = 3.7pp)
+    const measured = [
+      mk('Marcus Jin', 0.316, 0.338, 0.920, 0.942),
+      mk('Bilaal Dhalech', 0.040, 0.050, 0.604, 0.641),
+      mk('Amber', 0.304, 0.315, 0.998, 1.000),
+    ];
+    const html = render(measured);
+    if (!html.includes('符號一致')) problems.push('全部符號一致時,seedSpreadBlock 沒有說出來');
+    if (!html.includes('Bilaal Dhalech')) problems.push('seedSpreadBlock 沒有指出極差最大的姿態');
+    if (!html.includes('3.7')) problems.push('seedSpreadBlock 算出的極差不是 3.7 個百分點(Bilaal 60.4~64.1%)');
+    // 反向:有一個姿態符號翻轉 -> 必須改成警告,而且不能還說「一致」
+    const flipped = JSON.parse(JSON.stringify(measured));
+    flipped[1].paired.seedSpread.medianMin = -0.02;
+    flipped[1].paired.seedSpread.signFlips = true;
+    const h2 = render(flipped);
+    if (h2.includes('符號一致')) problems.push('有姿態符號翻轉時,seedSpreadBlock 仍宣稱「符號一致」');
+    if (!h2.includes('不該拿來下結論')) problems.push('符號翻轉時沒有出現「不該拿來下結論」的警告');
+    // 空資料不得爆掉(這塊在 mcResults 存在時才呼叫,但 paired 可能是 null)
+    for (const [label, rs] of [['空陣列', []], ['paired null', [{ label: 'X', paired: null }]],
+                               ['缺 seedSpread', [{ label: 'X', paired: { median: 0, lo: 0, hi: 0, pAwins: 0, runs: 1 } }]]]) {
+      let out;
+      try { out = render(rs); } catch (e) { problems.push(`seedSpreadBlock 在「${label}」時拋錯:${e.message}`); continue; }
+      if (out !== '') problems.push(`seedSpreadBlock 在「${label}」時應回傳空字串,實際長度 ${out.length}`);
+    }
+  }
+
   if (problems.length) { fail('MC 抽樣正確性', problems.join('\n    ')); return; }
   ok('MC 抽樣正確性',
     `${M.MC_SEEDS.length} 顆非零種子可重現;最後一個合法起點(${LAST})抽得到且不越界;` +
-    `${LAST + 1} 個起點全覆蓋;A/B 共用起點(相同輸入 A-B 恆為 0);跨種子摘要正確`);
+    `${LAST + 1} 個起點全覆蓋;A/B 共用起點(相同輸入 A-B 恆為 0);跨種子摘要正確；跨種子區塊的渲染與反向測試都過`);
 }
 
 // =============================================================

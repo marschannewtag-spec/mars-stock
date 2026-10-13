@@ -304,6 +304,16 @@ const cases = [
       'const rng = xorshift32(MC_SEEDS[0]);'),
     restore: restoreGit('js/app.js'),
   },
+  {
+    // 符號翻轉的警告被拿掉 —— 畫面會在種子之間方向不一致時仍宣稱「一致」。
+    // 這是跨種子離散度唯一真正重要的那個訊號。
+    name: '符號翻轉警告失效',
+    expect: 'MC 抽樣正確性',
+    break: () => patch('js/app.js',
+      'signFlips: !(meds.every((m) => m >= 0) || meds.every((m) => m <= 0)),',
+      'signFlips: false,'),
+    restore: restoreGit('js/app.js'),
+  },
 ];
 
 // =============================================================
