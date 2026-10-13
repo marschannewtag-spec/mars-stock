@@ -149,6 +149,8 @@ function renderToday() {
     ${state.sells.length === 0
       ? `<p class="empty">現有持倉皆未觸發出場條件，續抱。</p>`
       : state.sells.map(sellCard).join('')}
+
+    ${orderList(blocked, gateOk)}
   `;
 }
 
@@ -243,6 +245,110 @@ function sellCard(s) {
         <button class="btn ${partial ? 'ghost' : 'sell'}" data-sell="${s.symbol}">${partial ? '減碼' : '賣出'}</button>
       </div>
     </div>`;
+}
+
+// =============================================================
+// 今日訂單清單 —— 把訊號翻成「拿去券商照著打」的東西
+// -------------------------------------------------------------
+// 為什麼要有這個:上面的買賣卡片是給你**決定**用的,這張表是給你**執行**用的。
+// 複委託的下單框要代號、買賣別、股數、委託價 —— 卡片上沒有「股數」,
+// 因為 App 其實不知道你有多少錢。這裡補上那一塊。
+//
+// ⚠️ 這張表只是把 App 已經算出來的訊號換個排版,**沒有任何新的決策邏輯**。
+//    「已成交」按鈕用的也是上面那兩個按鈕的同一個 data-buy / data-sell 路徑,
+//    不是另一條平行的寫入邏輯 —— 兩條路徑會分岔,分岔就會對不起來。
+// =============================================================
+const CAPITAL_KEY = 'sd_capital_usd';
+function getCapital() {
+  const v = parseFloat(localStorage.getItem(CAPITAL_KEY) || '');
+  return isFinite(v) && v > 0 ? v : null;
+}
+
+function orderList(blocked, gateOk) {
+  const cap = getCapital();
+  const perSlot = cap ? cap / DAILY_MAX : null;
+
+  // 市場防禦中就**不產生買單**。上面的卡片是「觀察名單」,
+  // 觀察名單變成訂單清單等於繞過市場水位 —— 那是這個 App 最重要的總開關。
+  const buys = blocked ? [] : state.buys.slice(0, Math.max(0, DAILY_MAX - portfolio.positions.length));
+  const sells = state.sells;
+
+  const capForm = `
+    <div class="levels" style="margin:0 0 10px">
+      帳戶資金(美元)
+      <input id="cap-input" class="mono" type="number" min="0" step="100" inputmode="decimal"
+             value="${cap ?? ''}" placeholder="例:30000"
+             style="width:110px;margin:0 6px;padding:4px 7px;border:1px solid var(--line);
+                    border-radius:6px;background:transparent;color:inherit;font:inherit">
+      ${perSlot
+        ? `→ 每筆配置 <strong class="mono">$${perSlot.toFixed(0)}</strong>(1/${DAILY_MAX})`
+        : `<span class="muted">填了才算得出股數</span>`}
+    </div>`;
+
+  if (!buys.length && !sells.length) {
+    return `<h2 class="block-head">今日訂單清單 <span class="head-note">拿去券商照著打</span></h2>
+      ${capForm}<p class="empty">${blocked
+        ? (gateOk ? '市場防禦中,今天不進場;持倉也沒有觸發出場。<strong>今天不用下單。</strong>'
+                  : '水位算不出來,保守起見不進場;持倉也沒有觸發出場。<strong>今天不用下單。</strong>')
+        : '今天沒有買進訊號,持倉也沒有觸發出場。<strong>今天不用下單。</strong>'}</p>`;
+  }
+
+  const rows = [];
+  for (const b of buys) {
+    const sh = perSlot ? Math.floor(perSlot / b.price) : null;
+    const tooSmall = sh != null && sh < 1;
+    rows.push(`<tr>
+      <td class="mono up">買</td>
+      <td class="mono">${b.symbol}</td>
+      <td class="mono ${tooSmall ? 'down' : ''}">${
+        sh == null ? '—' : tooSmall ? '不足 1 股' : sh}</td>
+      <td class="mono">${b.price.toFixed(2)}</td>
+      <td class="mono">${b.stopPrice.toFixed(2)}</td>
+      <td style="text-align:left">${b.sectorName}</td>
+      <td><button class="btn buy" data-buy="${b.symbol}">已成交</button></td>
+    </tr>`);
+  }
+  for (const s of sells) {
+    const partial = s.fraction != null && s.fraction < 1;
+    rows.push(`<tr>
+      <td class="mono down">${partial ? '減碼' : '賣'}</td>
+      <td class="mono">${s.symbol}</td>
+      <td class="mono">${partial ? `庫存 ${(s.fraction * 100).toFixed(0)}%` : '庫存全部'}</td>
+      <td class="mono">${s.price.toFixed(2)}</td>
+      <td class="muted">—</td>
+      <td style="text-align:left">${s.reasons.join(' / ')}</td>
+      <td><button class="btn ${partial ? 'ghost' : 'sell'}" data-sell="${s.symbol}">已成交</button></td>
+    </tr>`);
+  }
+
+  const noShares = perSlot == null && buys.length;
+  return `
+    <h2 class="block-head">今日訂單清單 <span class="head-note">拿去券商照著打</span></h2>
+    ${capForm}
+    <div class="mc-table-wrap"><table class="mc-table"><thead><tr>
+      <th>動作</th><th>代號</th><th>股數</th><th>參考價</th><th>停損</th><th>理由</th><th></th>
+    </tr></thead><tbody>${rows.join('')}</tbody></table></div>
+    <button class="btn ghost wide" id="copy-orders" style="margin-top:10px">⧉ 複製成文字</button>
+    <div class="levels" style="margin-top:10px;line-height:1.7">
+      ⚠️ <strong>參考價是${state.dataDate ? state.dataDate + ' 的' : ''}收盤價,不是即時報價。</strong>
+      掛限價單之前自己看一眼盤 —— 開盤跳空的話這個價格會差很多。
+      <br>⚠️ <strong>停損價只是你自己要記住的數字,App 不會、也不能幫你掛停損單。</strong>
+      它是下一次打開 App 時判斷「該不該賣」的依據。
+      <br>⚠️ <strong>賣出欄位給不出股數</strong> —— App 把持倉記成「幾分之幾個倉位」,
+      從來沒有記過你實際買了幾股。股數請直接看券商的庫存頁。
+      ${noShares ? '<br>⚠️ <strong>還沒填帳戶資金,所以買進股數算不出來。</strong>' : ''}
+      <br>按「已成交」才會寫進持倉紀錄 —— <strong>它不會幫你下單,下單的人只能是你。</strong>
+    </div>`;
+}
+
+function ordersAsText() {
+  const rows = [...document.querySelectorAll('.mc-table tbody tr')];
+  const lines = rows.map((tr) => {
+    const c = [...tr.children].map((td) => td.textContent.trim());
+    return `${c[0]} ${c[1]}　股數 ${c[2]}　參考價 $${c[3]}${c[4] !== '—' ? `　停損 $${c[4]}` : ''}`;
+  });
+  return `SignalDesk 訂單清單(${state.dataDate || '日期不明'} 收盤價)\n` + lines.join('\n')
+    + '\n※ 參考價非即時報價,下單前請自行確認。停損需自行記錄,App 不會掛停損單。';
 }
 
 function addPosForm() {
@@ -758,6 +864,29 @@ function renderLoading() {
 }
 
 function bindViewEvents() {
+  // 訂單清單:資金輸入 + 複製。
+  // 只在 blur/Enter 時存檔並重繪 —— 每打一個字就 render() 會把輸入框重建,
+  // 游標會跳掉,變成打不了字。
+  const capEl = document.querySelector('#cap-input');
+  if (capEl) {
+    const commit = () => {
+      const v = parseFloat(capEl.value);
+      if (isFinite(v) && v > 0) localStorage.setItem(CAPITAL_KEY, String(v));
+      else localStorage.removeItem(CAPITAL_KEY);
+      render();
+    };
+    capEl.onblur = commit;
+    capEl.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); capEl.blur(); } };
+  }
+  const copyEl = document.querySelector('#copy-orders');
+  if (copyEl) {
+    copyEl.onclick = async () => {
+      const txt = ordersAsText();
+      try { await navigator.clipboard.writeText(txt); toast('訂單清單已複製'); }
+      catch (e) { toast('複製失敗,請手動選取'); console.warn('clipboard', e); }
+    };
+  }
+
   document.querySelectorAll('[data-buy]').forEach((el) =>
     el.onclick = async () => {
       const q = state.quotes.find((x) => x.symbol === el.dataset.buy);
