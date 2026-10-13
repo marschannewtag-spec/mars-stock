@@ -172,8 +172,16 @@ const cases = [
     name: '已實現報酬漏掉部位權重',
     expect: '已實現報酬權重',
     break: () => patch('js/portfolio.js',
-      'return (c.fraction ?? 1) * c.pnlPct / DAILY_POS;',
+      'return (c.fraction ?? 1) * c.pnlPct * w;',
       'return (c.fraction ?? 1) * c.pnlPct;'),
+    restore: restoreGit('js/portfolio.js'),
+  },
+  {
+    // 把 posWeight 從 cashLog 拿掉,模擬「權重事後才從現行設定讀」的退化。
+    // 症狀是換一次 config.DAILY_PRESET,所有歷史交易的報酬都被改寫。
+    name: '平倉沒記下部位權重',
+    expect: '已實現報酬權重',
+    break: () => patch('js/portfolio.js', '      posWeight: 1 / DAILY_POS,\n', ''),
     restore: restoreGit('js/portfolio.js'),
   },
 ];
